@@ -5,6 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 from enum import Enum
 import os
+import logging
 from urllib.parse import urlencode
 from pathlib import Path
 from secrets import token_urlsafe
@@ -17,10 +18,12 @@ from fastapi.responses import RedirectResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "promise_tracker.db"
+logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATABASE_PATH}")
 APP_ENV = os.getenv("APP_ENV", "development")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
@@ -319,30 +322,43 @@ async def google_callback(code: str, state: str, db: Session = Depends(get_db)):
             raise JWTError("Invalid OAuth state")
     except JWTError as exc:
         raise HTTPException(status_code=400, detail="Google sign-in session expired; please try again") from exc
-    async with httpx.AsyncClient(timeout=15) as client:
-        exchange = await client.post("https://oauth2.googleapis.com/token", data={
-            "code": code,
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "redirect_uri": f"{API_URL}/auth/google/callback",
-            "grant_type": "authorization_code",
-        })
-        if exchange.is_error:
-            raise HTTPException(status_code=401, detail="Google could not complete sign-in")
-        id_token = exchange.json().get("id_token")
-        verified = await client.get("https://oauth2.googleapis.com/tokeninfo", params={"id_token": id_token})
-        if verified.is_error:
-            raise HTTPException(status_code=401, detail="Google identity verification failed")
-        identity = verified.json()
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            exchange = await client.post("https://oauth2.googleapis.com/token", data={
+                "code": code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": f"{API_URL}/auth/google/callback",
+                "grant_type": "authorization_code",
+            })
+            if exchange.is_error:
+                logger.warning("Google token exchange failed: status=%s body=%s", exchange.status_code, exchange.text)
+                raise HTTPException(status_code=401, detail="Google could not complete sign-in")
+            id_token = exchange.json().get("id_token")
+            verified = await client.get("https://oauth2.googleapis.com/tokeninfo", params={"id_token": id_token})
+            if verified.is_error:
+                logger.warning("Google ID-token verification failed: status=%s body=%s", verified.status_code, verified.text)
+                raise HTTPException(status_code=401, detail="Google identity verification failed")
+            identity = verified.json()
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        logger.exception("Google OAuth network request failed")
+        raise HTTPException(status_code=502, detail="Could not reach Google sign-in. Please try again.") from exc
     if identity.get("aud") != GOOGLE_CLIENT_ID or identity.get("email_verified") not in {"true", True}:
         raise HTTPException(status_code=401, detail="Google identity verification failed")
     email = identity["email"].lower()
-    user = db.query(User).filter_by(email=email).first()
-    if user is None:
-        user = User(id=str(uuid4()), email=email, display_name=identity.get("name") or email.split("@")[0])
-        db.add(user)
-        db.add(Space(id=str(uuid4()), name="My promises", type=SpaceType.PERSONAL.value, owner_id=user.id))
-        db.commit()
+    try:
+        user = db.query(User).filter_by(email=email).first()
+        if user is None:
+            user = User(id=str(uuid4()), email=email, display_name=identity.get("name") or email.split("@")[0])
+            db.add(user)
+            db.add(Space(id=str(uuid4()), name="My promises", type=SpaceType.PERSONAL.value, owner_id=user.id))
+            db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("Could not create or load Google OAuth user")
+        raise HTTPException(status_code=500, detail="Could not set up your account. Please try again.") from exc
     session_token = jwt.encode(
         {"sub": user.id, "exp": datetime.now(timezone.utc) + timedelta(days=7)},
         SESSION_SECRET,
