@@ -384,8 +384,20 @@ def logout():
 
 
 @app.get("/me")
-def me(user: User = Depends(current_user)):
-    return {"id": user.id, "email": user.email, "display_name": user.display_name}
+def me(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    personal_space = (
+        db.query(Space)
+        .filter_by(owner_id=user.id, type=SpaceType.PERSONAL.value)
+        .first()
+    )
+    if personal_space is None:
+        raise HTTPException(status_code=500, detail="Your personal space could not be found")
+    return {
+        "id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "personal_space_id": personal_space.id,
+    }
 
 
 @app.get("/spaces/{space_id}/promises", response_model=list[PromiseResponse])
