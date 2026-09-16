@@ -3,6 +3,14 @@ import type { FormEvent } from 'react'
 import './App.css'
 
 const API = import.meta.env.VITE_API_URL ?? '/api'
+const browserFetch = window.fetch.bind(window)
+window.fetch = (async (input, init) => {
+  const response = await browserFetch(input, { ...init, credentials: 'include' })
+  if (response.status === 401 && !window.location.pathname.includes('/auth/')) {
+    window.location.assign(`${API}/auth/google/login`)
+  }
+  return response
+}) as typeof fetch
 type PromiseItem={id:string;title:string;category:string;tracking_mode:string;unit:string|null;target_value:number|null;frequency:string;is_locked:boolean;current_progress:number;completion_percent:number}
 type Group={id:string;space_id:string;name:string;role:string}
 const modes:Record<string,string>={check_off:'Check off',quantity:'Quantity',duration:'Duration',cumulative:'Cumulative goal',percentage:'Percentage',custom:'Custom quantity'}

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from datetime import timedelta
 from decimal import Decimal
 from enum import Enum
 import os
+from urllib.parse import urlencode
 from pathlib import Path
 from secrets import token_urlsafe
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, status
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from jose import JWTError, jwt
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
@@ -17,6 +22,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "promise_tracker.db"
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATABASE_PATH}")
+APP_ENV = os.getenv("APP_ENV", "development")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+API_URL = os.getenv("API_URL", "http://localhost:8000")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "development-only-secret")
 
 # Render exposes Postgres URLs with the postgres:// scheme. SQLAlchemy uses the
 # explicit psycopg driver scheme that is installed by requirements.txt.
@@ -197,8 +208,7 @@ def get_db():
         db.close()
 
 
-def current_user(db: Session = Depends(get_db)) -> User:
-    # Temporary local identity. Google token verification replaces this in the auth milestone.
+def development_user(db: Session) -> User:
     user = db.get(User, "demo-user")
     if user is None:
         user = User(id="demo-user", email="you@example.com", display_name="You")
@@ -206,6 +216,21 @@ def current_user(db: Session = Depends(get_db)) -> User:
         db.add(Space(id="personal-demo", name="My promises", type=SpaceType.PERSONAL.value, owner_id=user.id))
         db.commit()
     return user
+
+
+def current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    token = request.cookies.get("promise_session")
+    if token:
+        try:
+            claims = jwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
+            user = db.get(User, claims.get("sub"))
+            if user:
+                return user
+        except JWTError:
+            pass
+    if APP_ENV != "production":
+        return development_user(db)
+    raise HTTPException(status_code=401, detail="Sign in with Google to continue")
 
 
 def promise_view(promise: Promise) -> PromiseResponse:
@@ -255,6 +280,7 @@ app.add_middleware(
         "https://puneeee.github.io",
     ],
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -263,6 +289,78 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/auth/google/login")
+def google_login():
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or APP_ENV != "production":
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured")
+    state = jwt.encode(
+        {"purpose": "google-oauth", "exp": datetime.now(timezone.utc) + timedelta(minutes=10)},
+        SESSION_SECRET,
+        algorithm="HS256",
+    )
+    params = urlencode({
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": f"{API_URL}/auth/google/callback",
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "prompt": "select_account",
+    })
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+
+
+@app.get("/auth/google/callback")
+async def google_callback(code: str, state: str, db: Session = Depends(get_db)):
+    try:
+        claims = jwt.decode(state, SESSION_SECRET, algorithms=["HS256"])
+        if claims.get("purpose") != "google-oauth":
+            raise JWTError("Invalid OAuth state")
+    except JWTError as exc:
+        raise HTTPException(status_code=400, detail="Google sign-in session expired; please try again") from exc
+    async with httpx.AsyncClient(timeout=15) as client:
+        exchange = await client.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": f"{API_URL}/auth/google/callback",
+            "grant_type": "authorization_code",
+        })
+        if exchange.is_error:
+            raise HTTPException(status_code=401, detail="Google could not complete sign-in")
+        id_token = exchange.json().get("id_token")
+        verified = await client.get("https://oauth2.googleapis.com/tokeninfo", params={"id_token": id_token})
+        if verified.is_error:
+            raise HTTPException(status_code=401, detail="Google identity verification failed")
+        identity = verified.json()
+    if identity.get("aud") != GOOGLE_CLIENT_ID or identity.get("email_verified") not in {"true", True}:
+        raise HTTPException(status_code=401, detail="Google identity verification failed")
+    email = identity["email"].lower()
+    user = db.query(User).filter_by(email=email).first()
+    if user is None:
+        user = User(id=str(uuid4()), email=email, display_name=identity.get("name") or email.split("@")[0])
+        db.add(user)
+        db.add(Space(id=str(uuid4()), name="My promises", type=SpaceType.PERSONAL.value, owner_id=user.id))
+        db.commit()
+    session_token = jwt.encode(
+        {"sub": user.id, "exp": datetime.now(timezone.utc) + timedelta(days=7)},
+        SESSION_SECRET,
+        algorithm="HS256",
+    )
+    response = RedirectResponse(FRONTEND_URL)
+    response.set_cookie(
+        key="promise_session", value=session_token, httponly=True, secure=True,
+        samesite="none", max_age=7 * 24 * 60 * 60,
+    )
+    return response
+
+
+@app.post("/auth/logout")
+def logout():
+    response = RedirectResponse(FRONTEND_URL, status_code=303)
+    response.delete_cookie("promise_session", secure=True, samesite="none")
+    return response
 
 
 @app.get("/me")
