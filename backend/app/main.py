@@ -350,7 +350,27 @@ def create_invite(group_id: str, db: Session = Depends(get_db), user: User = Dep
     invite = Invite(id=str(uuid4()), group_id=group_id, token=token_urlsafe(24), created_by=user.id)
     db.add(invite)
     db.commit()
-    return {"token": invite.token, "join_path": f"/join/{invite.token}", "join_policy": db.get(Group, group_id).join_policy}
+    # GitHub Pages serves this project below /promise-tracker/ and cannot resolve
+    # server-side paths such as /join/{token}. A query-string invite keeps the
+    # link inside the static single-page app instead of returning a Pages 404.
+    return {"token": invite.token, "join_path": f"/promise-tracker/?invite={invite.token}", "join_policy": db.get(Group, group_id).join_policy}
+
+
+@app.post("/invites/{token}/join")
+def join_with_invite(token: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    invite = db.query(Invite).filter_by(token=token, is_active=True).first()
+    if invite is None:
+        raise HTTPException(status_code=404, detail="This invite link is invalid or has been revoked")
+    group = db.get(Group, invite.group_id)
+    if group.join_policy == "admin_approval":
+        raise HTTPException(status_code=409, detail="This group requires admin approval before joining")
+    membership = db.query(Membership).filter_by(group_id=group.id, user_id=user.id).first()
+    if membership is None:
+        membership = Membership(id=str(uuid4()), group_id=group.id, user_id=user.id, role="member")
+        db.add(membership)
+        db.commit()
+    space = db.get(Space, group.space_id)
+    return {"id": group.id, "space_id": space.id, "name": space.name, "role": membership.role}
 
 
 @app.get("/groups/{group_id}/dashboard")
