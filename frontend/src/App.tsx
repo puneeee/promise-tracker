@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
 
-const API = '/api'
+const API = import.meta.env.VITE_API_URL ?? '/api'
 type PromiseItem={id:string;title:string;category:string;tracking_mode:string;unit:string|null;target_value:number|null;frequency:string;is_locked:boolean;current_progress:number;completion_percent:number}
 type Group={id:string;space_id:string;name:string;role:string}
 const modes:Record<string,string>={check_off:'Check off',quantity:'Quantity',duration:'Duration',cumulative:'Cumulative goal',percentage:'Percentage',custom:'Custom quantity'}
