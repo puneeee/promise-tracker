@@ -1,33 +1,34 @@
 # Promise Tracker
 
-> Keep every promise you make to yourself.
+An accountability app for personal commitments and private groups. The first working slice provides personal/group spaces, flexible promise tracking, append-only progress history, group visibility, locking foundations, and a polished React dashboard.
 
-Promise Tracker is a modern productivity application that helps users build discipline by tracking personal promises, habits, goals, and long-term consistency.
+## Run locally
 
-## Vision
+From the project root, start the backend with:
 
-Most people don't fail because they lack goals—they fail because they don't keep the promises they make to themselves.
+```powershell
+.\backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --reload --port 8000
+```
 
-Promise Tracker is designed to bridge that gap by helping users commit, track, and reflect on their daily actions.
+Start the frontend in a second terminal:
 
-## Planned Features
+```powershell
+cd frontend
+npm run dev
+```
 
-- Daily promise tracking
-- Habit management
-- Goal tracking
-- Streaks and consistency analytics
-- Calendar view
-- Smart reminders
-- AI-powered insights
-- Progress dashboard
+Then open the local address Vite prints, normally `http://localhost:5173`.
 
-## Tech Stack
+The current development identity is `you@example.com`. Google OAuth, Google Calendar check-ins, invitation approval, reminders, and the remaining role-management endpoints are the next implementation milestones; their behaviour and rules are captured in [the V1 plan](docs/chapter3/03_Promise_Engine.md).
 
-- Backend: Python
-- Frontend: (To be decided)
-- Database: SQLite → PostgreSQL
-- Version Control: Git & GitHub
+## Verification
 
-## Status
+```powershell
+cd frontend
+npm run build
+```
 
-🚧 Under active development.
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m compileall app
+```
