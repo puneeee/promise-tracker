@@ -216,6 +216,7 @@ def development_user(db: Session) -> User:
     if user is None:
         user = User(id="demo-user", email="you@example.com", display_name="You")
         db.add(user)
+        db.flush()
         db.add(Space(id="personal-demo", name="My promises", type=SpaceType.PERSONAL.value, owner_id=user.id))
         db.commit()
     return user
@@ -353,6 +354,9 @@ async def google_callback(code: str, state: str, db: Session = Depends(get_db)):
         if user is None:
             user = User(id=str(uuid4()), email=email, display_name=identity.get("name") or email.split("@")[0])
             db.add(user)
+            # Space.owner_id is a foreign key. Flush the user first because these
+            # two independent model instances do not have an ORM relationship.
+            db.flush()
             db.add(Space(id=str(uuid4()), name="My promises", type=SpaceType.PERSONAL.value, owner_id=user.id))
             db.commit()
     except SQLAlchemyError as exc:
