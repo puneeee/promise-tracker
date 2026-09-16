@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
+import os
 from pathlib import Path
 from secrets import token_urlsafe
 from uuid import uuid4
@@ -15,7 +16,17 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "promise_tracker.db"
-engine = create_engine(f"sqlite:///{DATABASE_PATH}", connect_args={"check_same_thread": False})
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATABASE_PATH}")
+
+# Render exposes Postgres URLs with the postgres:// scheme. SQLAlchemy uses the
+# explicit psycopg driver scheme that is installed by requirements.txt.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+
+engine_options: dict = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("sqlite"):
+    engine_options["connect_args"] = {"check_same_thread": False}
+engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
