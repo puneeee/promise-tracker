@@ -295,12 +295,19 @@ def health():
     return {"status": "ok"}
 
 
+def safe_frontend_destination(next_url: str | None) -> str:
+    """Only redirect OAuth users back to this application's configured frontend."""
+    if next_url and next_url.startswith(FRONTEND_URL.rstrip("/")):
+        return next_url
+    return FRONTEND_URL
+
+
 @app.get("/auth/google/login")
-def google_login():
+def google_login(next: str | None = None):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or APP_ENV != "production":
         raise HTTPException(status_code=503, detail="Google sign-in is not configured")
     state = jwt.encode(
-        {"purpose": "google-oauth", "exp": datetime.now(timezone.utc) + timedelta(minutes=10)},
+        {"purpose": "google-oauth", "next": safe_frontend_destination(next), "exp": datetime.now(timezone.utc) + timedelta(minutes=10)},
         SESSION_SECRET,
         algorithm="HS256",
     )
@@ -368,7 +375,7 @@ async def google_callback(code: str, state: str, db: Session = Depends(get_db)):
         SESSION_SECRET,
         algorithm="HS256",
     )
-    response = RedirectResponse(FRONTEND_URL)
+    response = RedirectResponse(safe_frontend_destination(claims.get("next")))
     response.set_cookie(
         key="promise_session", value=session_token, httponly=True, secure=True,
         samesite="none", max_age=7 * 24 * 60 * 60,
@@ -403,7 +410,12 @@ def me(db: Session = Depends(get_db), user: User = Depends(current_user)):
 @app.get("/spaces/{space_id}/promises", response_model=list[PromiseResponse])
 def list_promises(space_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     ensure_space_access(space_id, user, db)
-    promises = db.query(Promise).filter_by(space_id=space_id).order_by(Promise.created_at.desc()).all()
+    promises = (
+        db.query(Promise)
+        .filter_by(space_id=space_id, status=PromiseStatus.ACTIVE.value)
+        .order_by(Promise.created_at.desc())
+        .all()
+    )
     return [promise_view(promise) for promise in promises]
 
 
@@ -414,6 +426,8 @@ def create_promise(payload: PromiseCreate, space_id: str, db: Session = Depends(
         raise HTTPException(status_code=422, detail="A date-range promise needs a valid start and end date")
     if payload.tracking_mode != TrackingMode.CHECK_OFF and payload.target_value is None:
         raise HTTPException(status_code=422, detail="A target value is required for this tracking mode")
+    if payload.tracking_mode != TrackingMode.CHECK_OFF and not (payload.unit or "").strip():
+        raise HTTPException(status_code=422, detail="A unit is required for this tracking mode")
     promise = Promise(id=str(uuid4()), space_id=space_id, owner_id=user.id, **payload.model_dump())
     db.add(promise)
     db.commit()
@@ -478,9 +492,13 @@ def list_groups(db: Session = Depends(get_db), user: User = Depends(current_user
 @app.post("/groups", status_code=status.HTTP_201_CREATED)
 def create_group(payload: GroupCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     space = Space(id=str(uuid4()), name=payload.name.strip(), type=SpaceType.GROUP.value, owner_id=user.id)
+    db.add(space)
+    db.flush()
     group = Group(id=str(uuid4()), space_id=space.id, join_policy=payload.join_policy, timezone=payload.timezone)
+    db.add(group)
+    db.flush()
     membership = Membership(id=str(uuid4()), group_id=group.id, user_id=user.id, role="owner")
-    db.add_all([space, group, membership])
+    db.add(membership)
     db.commit()
     return {"id": group.id, "space_id": space.id, "name": space.name, "role": "owner", "join_policy": group.join_policy}
 
