@@ -113,6 +113,16 @@ class Invite(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class JoinRequest(Base):
+    __tablename__ = "join_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    group_id: Mapped[str] = mapped_column(ForeignKey("groups.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    user: Mapped[User] = relationship()
+
+
 class Promise(Base):
     __tablename__ = "promises"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -178,11 +188,29 @@ class GroupCreate(BaseModel):
     join_policy: str = Field(default="invite_link", pattern="^(invite_link|admin_approval)$")
     timezone: str = Field(default="Asia/Kolkata", max_length=80)
 
+    @field_validator("name")
+    @classmethod
+    def trim_name(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 3:
+            raise ValueError("Group name must contain at least 3 characters")
+        return value
+
 
 class GroupUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=3, max_length=120)
     join_policy: str | None = Field(default=None, pattern="^(invite_link|admin_approval)$")
     timezone: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @field_validator("name")
+    @classmethod
+    def trim_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        value = value.strip()
+        if len(value) < 3:
+            raise ValueError("Group name must contain at least 3 characters")
+        return value
 
 
 class PromiseUpdate(BaseModel):
@@ -199,6 +227,22 @@ def group_membership_or_403(group_id: str, user_id: str, db: Session) -> Members
     if membership is None:
         raise HTTPException(status_code=403, detail="You are not a group member")
     return membership
+
+
+def recurring_period_start(frequency: str, today: date | None = None) -> date:
+    today = today or datetime.now(timezone.utc).date()
+    if frequency == "weekly":
+        return today - timedelta(days=today.weekday())
+    if frequency == "monthly":
+        return today.replace(day=1)
+    return today
+
+
+def progress_for_current_period(promise: Promise) -> list[ProgressEntry]:
+    if promise.schedule_type != "recurring":
+        return list(promise.progress_entries)
+    start = recurring_period_start(promise.frequency)
+    return [entry for entry in promise.progress_entries if entry.completed_at.date() >= start]
 
 
 class PromiseResponse(BaseModel):
@@ -257,7 +301,7 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
 
 
 def promise_view(promise: Promise) -> PromiseResponse:
-    progress = sum((entry.value for entry in promise.progress_entries), Decimal("0"))
+    progress = sum((entry.value for entry in progress_for_current_period(promise)), Decimal("0"))
     if promise.tracking_mode == TrackingMode.CHECK_OFF.value:
         progress = Decimal("1") if progress else Decimal("0")
     target = promise.target_value or Decimal("1")
@@ -433,14 +477,14 @@ def me(db: Session = Depends(get_db), user: User = Depends(current_user)):
 
 
 @app.get("/spaces/{space_id}/promises", response_model=list[PromiseResponse])
-def list_promises(space_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def list_promises(space_id: str, view: str = "active", db: Session = Depends(get_db), user: User = Depends(current_user)):
     ensure_space_access(space_id, user, db)
-    promises = (
-        db.query(Promise)
-        .filter_by(space_id=space_id, status=PromiseStatus.ACTIVE.value)
-        .order_by(Promise.created_at.desc())
-        .all()
-    )
+    if view not in {"active", "completed", "archived", "all"}:
+        raise HTTPException(status_code=422, detail="Unknown promise view")
+    query = db.query(Promise).filter_by(space_id=space_id)
+    if view != "all":
+        query = query.filter_by(status=view)
+    promises = query.order_by(Promise.created_at.desc()).all()
     return [promise_view(promise) for promise in promises]
 
 
@@ -468,9 +512,12 @@ def add_progress(promise_id: str, payload: ProgressCreate, db: Session = Depends
         raise HTTPException(status_code=403, detail="Only the promise owner can update progress")
     if promise.status == PromiseStatus.ARCHIVED.value or promise.is_locked:
         raise HTTPException(status_code=409, detail="This promise cannot receive progress updates")
+    if promise.schedule_type == "recurring" and promise.tracking_mode == TrackingMode.CHECK_OFF.value:
+        if progress_for_current_period(promise):
+            raise HTTPException(status_code=409, detail="This promise is already complete for the current period")
     db.add(ProgressEntry(id=str(uuid4()), promise_id=promise.id, owner_id=user.id, value=payload.value, note=payload.note))
     db.flush()
-    current = sum((entry.value for entry in promise.progress_entries), Decimal("0"))
+    current = sum((entry.value for entry in progress_for_current_period(promise)), Decimal("0"))
     if promise.schedule_type == "date_range" and promise.target_value and current >= promise.target_value:
         promise.status = PromiseStatus.COMPLETED.value
     db.commit()
@@ -489,17 +536,24 @@ def promise_history(promise_id: str, db: Session = Depends(get_db), user: User =
         .all()
     )
     total = Decimal("0")
+    period_total = Decimal("0")
+    period_start = recurring_period_start(promise.frequency) if promise.schedule_type == "recurring" else None
     result = []
     for entry in entries:
         total += entry.value
+        in_current_period = period_start is None or entry.completed_at.date() >= period_start
+        if in_current_period:
+            period_total += entry.value
         result.append({
             "id": entry.id,
             "value": float(entry.value),
             "total": float(total),
+            "period_total": float(period_total),
             "note": entry.note,
             "completed_at": entry.completed_at.isoformat(),
+            "in_current_period": in_current_period,
         })
-    return {"promise_id": promise.id, "tracking_mode": promise.tracking_mode, "target_value": float(promise.target_value or 1), "unit": promise.unit, "entries": result}
+    return {"promise_id": promise.id, "tracking_mode": promise.tracking_mode, "target_value": float(promise.target_value or 1), "unit": promise.unit, "period_start": period_start.isoformat() if period_start else None, "entries": result}
 
 
 @app.patch("/promises/{promise_id}", response_model=PromiseResponse)
@@ -550,7 +604,7 @@ def list_groups(db: Session = Depends(get_db), user: User = Depends(current_user
     for membership in memberships:
         group = db.get(Group, membership.group_id)
         space = db.get(Space, group.space_id)
-        result.append({"id": group.id, "space_id": space.id, "name": space.name, "role": membership.role, "join_policy": group.join_policy})
+        result.append({"id": group.id, "space_id": space.id, "name": space.name, "role": membership.role, "join_policy": group.join_policy, "timezone": group.timezone})
     return result
 
 
@@ -565,7 +619,7 @@ def create_group(payload: GroupCreate, db: Session = Depends(get_db), user: User
     membership = Membership(id=str(uuid4()), group_id=group.id, user_id=user.id, role="owner")
     db.add(membership)
     db.commit()
-    return {"id": group.id, "space_id": space.id, "name": space.name, "role": "owner", "join_policy": group.join_policy}
+    return {"id": group.id, "space_id": space.id, "name": space.name, "role": "owner", "join_policy": group.join_policy, "timezone": group.timezone}
 
 
 @app.patch("/groups/{group_id}")
@@ -584,6 +638,72 @@ def update_group(group_id: str, payload: GroupUpdate, db: Session = Depends(get_
         group.timezone = changes["timezone"].strip()
     db.commit()
     return {"id": group.id, "space_id": space.id, "name": space.name, "role": membership.role, "join_policy": group.join_policy, "timezone": group.timezone}
+
+
+@app.get("/groups/{group_id}/members")
+def group_members(group_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    group_membership_or_403(group_id, user.id, db)
+    members = db.query(Membership).filter_by(group_id=group_id).all()
+    return [{"user_id": member.user_id, "name": member.user.display_name, "email": member.user.email, "role": member.role} for member in members]
+
+
+@app.patch("/groups/{group_id}/members/{member_user_id}")
+def update_member_role(group_id: str, member_user_id: str, role: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    membership = group_membership_or_403(group_id, user.id, db)
+    if membership.role != "owner":
+        raise HTTPException(status_code=403, detail="Only the group owner can change roles")
+    target = db.query(Membership).filter_by(group_id=group_id, user_id=member_user_id).first()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Group member not found")
+    if target.role == "owner" or role not in {"admin", "member"}:
+        raise HTTPException(status_code=422, detail="The owner role cannot be changed")
+    target.role = role
+    db.commit()
+    return {"user_id": target.user_id, "role": target.role}
+
+
+@app.get("/groups/{group_id}/join-requests")
+def list_join_requests(group_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    membership = group_membership_or_403(group_id, user.id, db)
+    if membership.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Only an owner or admin can review join requests")
+    requests = db.query(JoinRequest).filter_by(group_id=group_id, status="pending").order_by(JoinRequest.created_at.asc()).all()
+    return [{"id": request.id, "user_id": request.user_id, "name": request.user.display_name, "email": request.user.email, "created_at": request.created_at.isoformat()} for request in requests]
+
+
+@app.post("/groups/{group_id}/join-requests/{request_id}/{decision}")
+def decide_join_request(group_id: str, request_id: str, decision: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    membership = group_membership_or_403(group_id, user.id, db)
+    if membership.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Only an owner or admin can review join requests")
+    if decision not in {"approve", "decline"}:
+        raise HTTPException(status_code=422, detail="Decision must be approve or decline")
+    request = db.query(JoinRequest).filter_by(id=request_id, group_id=group_id, status="pending").first()
+    if request is None:
+        raise HTTPException(status_code=404, detail="Pending join request not found")
+    request.status = "approved" if decision == "approve" else "declined"
+    if decision == "approve" and not db.query(Membership).filter_by(group_id=group_id, user_id=request.user_id).first():
+        db.add(Membership(id=str(uuid4()), group_id=group_id, user_id=request.user_id, role="member"))
+    db.commit()
+    return {"id": request.id, "status": request.status}
+
+
+@app.delete("/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_group(group_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    membership = group_membership_or_403(group_id, user.id, db)
+    if membership.role != "owner":
+        raise HTTPException(status_code=403, detail="Only the group owner can delete the group")
+    group = db.get(Group, group_id)
+    promise_ids = [promise.id for promise in db.query(Promise).filter_by(space_id=group.space_id).all()]
+    if promise_ids:
+        db.query(ProgressEntry).filter(ProgressEntry.promise_id.in_(promise_ids)).delete(synchronize_session=False)
+    db.query(Promise).filter_by(space_id=group.space_id).delete(synchronize_session=False)
+    db.query(JoinRequest).filter_by(group_id=group_id).delete(synchronize_session=False)
+    db.query(Invite).filter_by(group_id=group_id).delete(synchronize_session=False)
+    db.query(Membership).filter_by(group_id=group_id).delete(synchronize_session=False)
+    db.delete(group)
+    db.query(Space).filter_by(id=group.space_id).delete(synchronize_session=False)
+    db.commit()
 
 
 @app.post("/groups/{group_id}/invites", status_code=status.HTTP_201_CREATED)
@@ -607,7 +727,11 @@ def join_with_invite(token: str, db: Session = Depends(get_db), user: User = Dep
         raise HTTPException(status_code=404, detail="This invite link is invalid or has been revoked")
     group = db.get(Group, invite.group_id)
     if group.join_policy == "admin_approval":
-        raise HTTPException(status_code=409, detail="This group requires admin approval before joining")
+        existing = db.query(JoinRequest).filter_by(group_id=group.id, user_id=user.id, status="pending").first()
+        if existing is None:
+            db.add(JoinRequest(id=str(uuid4()), group_id=group.id, user_id=user.id, status="pending"))
+            db.commit()
+        return {"status": "pending", "message": "Your request was sent to the group admins."}
     membership = db.query(Membership).filter_by(group_id=group.id, user_id=user.id).first()
     if membership is None:
         membership = Membership(id=str(uuid4()), group_id=group.id, user_id=user.id, role="member")

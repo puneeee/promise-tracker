@@ -44,8 +44,24 @@ class PromiseTrackerApiTests(unittest.TestCase):
         self.assertEqual(edited.status_code, 200)
         self.assertEqual(edited.json()["title"], "Walk 12 kilometres")
 
+        check_off = self.client.post(f"/spaces/{personal_space}/promises", json={
+            "title": "Daily check in", "tracking_mode": "check_off", "frequency": "daily",
+        })
+        self.assertEqual(check_off.status_code, 201)
+        self.assertEqual(self.client.post(f"/promises/{check_off.json()['id']}/progress", json={"value": 1}).status_code, 200)
+        self.assertEqual(self.client.post(f"/promises/{check_off.json()['id']}/progress", json={"value": 1}).status_code, 409)
+
+        range_promise = self.client.post(f"/spaces/{personal_space}/promises", json={
+            "title": "Finish a short range", "tracking_mode": "quantity", "target_value": 1, "unit": "task",
+            "schedule_type": "date_range", "start_date": "2026-01-01", "end_date": "2026-12-31",
+        })
+        self.assertEqual(self.client.post(f"/promises/{range_promise.json()['id']}/progress", json={"value": 1}).status_code, 200)
+        completed = self.client.get(f"/spaces/{personal_space}/promises?view=completed")
+        self.assertTrue(any(item["id"] == range_promise.json()["id"] for item in completed.json()))
+
         group = self.client.post("/groups", json={"name": "API test group", "join_policy": "invite_link"})
         self.assertEqual(group.status_code, 201)
+        self.assertEqual(self.client.post("/groups", json={"name": "   ", "join_policy": "invite_link"}).status_code, 422)
         settings = self.client.patch(f"/groups/{group.json()['id']}", json={"name": "Renamed API group", "join_policy": "invite_link", "timezone": "Asia/Kolkata"})
         self.assertEqual(settings.status_code, 200)
         self.assertEqual(settings.json()["name"], "Renamed API group")
