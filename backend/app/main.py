@@ -601,6 +601,20 @@ def archive_promise(promise_id: str, db: Session = Depends(get_db), user: User =
     return promise_view(promise)
 
 
+@app.post("/promises/{promise_id}/restore", response_model=PromiseResponse)
+def restore_promise(promise_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    promise = get_promise_or_404(promise_id, db)
+    ensure_space_access(promise.space_id, user, db)
+    if promise.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the promise owner can restore it")
+    if promise.status != PromiseStatus.ARCHIVED.value:
+        raise HTTPException(status_code=409, detail="Only archived promises can be restored")
+    promise.status = PromiseStatus.ACTIVE.value
+    db.commit()
+    db.refresh(promise)
+    return promise_view(promise)
+
+
 @app.post("/promises/{promise_id}/duplicate", response_model=PromiseResponse, status_code=status.HTTP_201_CREATED)
 def duplicate_promise(promise_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     source = get_promise_or_404(promise_id, db)

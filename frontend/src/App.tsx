@@ -199,6 +199,11 @@ export default function App() {
       void load();
     }
   };
+  const restore = async (item: Item) => {
+    const r = await fetch(`${API}/promises/${item.id}/restore`, { method: "POST" });
+    if (!r.ok) setError(await detail(r, "Could not restore promise."));
+    else { setAction(null); setView("active"); void load(); }
+  };
   const invite = async () => {
     if (!group) return;
     const r = await fetch(`${API}/groups/${group.id}/invites`, {
@@ -436,6 +441,7 @@ export default function App() {
           }}
           duplicate={() => void duplicate(action)}
           archive={() => void archive(action)}
+          restore={() => void restore(action)}
         />
       )}{" "}
       {logging && (
@@ -526,6 +532,7 @@ function ActionSheet({
   history,
   duplicate,
   archive,
+  restore,
 }: {
   item: Item;
   close: () => void;
@@ -533,6 +540,7 @@ function ActionSheet({
   history: () => void;
   duplicate: () => void;
   archive: () => void;
+  restore: () => void;
 }) {
   return (
     <div className="modal">
@@ -554,9 +562,7 @@ function ActionSheet({
         <button onClick={duplicate}>
           Duplicate promise <span>›</span>
         </button>
-        <button className="danger" onClick={archive}>
-          Archive promise <span>›</span>
-        </button>
+        {item.status === "archived" ? <button onClick={restore}>Restore to active promises <span>›</span></button> : <button className="danger" onClick={archive}>Archive promise <span>›</span></button>}
       </section>
     </div>
   );

@@ -46,6 +46,10 @@ class PromiseTrackerApiTests(unittest.TestCase):
         edited = self.client.patch(f"/promises/{promise_id}", json={"title": "Walk 12 kilometres", "unit": "km"})
         self.assertEqual(edited.status_code, 200)
         self.assertEqual(edited.json()["title"], "Walk 12 kilometres")
+        self.assertEqual(self.client.post(f"/promises/{promise_id}/archive").status_code, 200)
+        archived = self.client.get(f"/spaces/{personal_space}/promises?view=archived")
+        self.assertTrue(any(item["id"] == promise_id for item in archived.json()))
+        self.assertEqual(self.client.post(f"/promises/{promise_id}/restore").status_code, 200)
 
         check_off = self.client.post(f"/spaces/{personal_space}/promises", json={
             "title": "Daily check in", "tracking_mode": "check_off", "frequency": "daily",
