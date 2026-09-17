@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import Enum
 import os
 import logging
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from pathlib import Path
 from secrets import token_urlsafe
 from uuid import uuid4
@@ -179,6 +179,21 @@ class GroupCreate(BaseModel):
     timezone: str = Field(default="Asia/Kolkata", max_length=80)
 
 
+class GroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=3, max_length=120)
+    join_policy: str | None = Field(default=None, pattern="^(invite_link|admin_approval)$")
+    timezone: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class PromiseUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=5, max_length=80)
+    category: str | None = Field(default=None, min_length=1, max_length=60)
+    frequency: str | None = Field(default=None, min_length=1, max_length=40)
+    target_value: Decimal | None = Field(default=None, gt=0)
+    unit: str | None = Field(default=None, max_length=30)
+    why_it_matters: str | None = Field(default=None, max_length=500)
+
+
 def group_membership_or_403(group_id: str, user_id: str, db: Session) -> Membership:
     membership = db.query(Membership).filter_by(group_id=group_id, user_id=user_id).first()
     if membership is None:
@@ -201,6 +216,7 @@ class PromiseResponse(BaseModel):
     current_progress: Decimal
     completion_percent: int
     owner_name: str
+    why_it_matters: str | None
 
 
 def get_db():
@@ -224,6 +240,9 @@ def development_user(db: Session) -> User:
 
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     token = request.cookies.get("promise_session")
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
     if token:
         try:
             claims = jwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
@@ -248,7 +267,7 @@ def promise_view(promise: Promise) -> PromiseResponse:
         tracking_mode=promise.tracking_mode, unit=promise.unit, target_value=promise.target_value,
         schedule_type=promise.schedule_type, frequency=promise.frequency, status=promise.status,
         is_locked=promise.is_locked, current_progress=progress, completion_percent=percent,
-        owner_name=promise.owner.display_name,
+        owner_name=promise.owner.display_name, why_it_matters=promise.why_it_matters,
     )
 
 
@@ -300,6 +319,12 @@ def safe_frontend_destination(next_url: str | None) -> str:
     if next_url and next_url.startswith(FRONTEND_URL.rstrip("/")):
         return next_url
     return FRONTEND_URL
+
+
+def frontend_session_destination(next_url: str | None, token: str) -> str:
+    """Use a URL fragment so the browser, not intermediary servers, receives the token."""
+    destination = safe_frontend_destination(next_url).split("#", 1)[0]
+    return f"{destination}#session={quote(token, safe='')}"
 
 
 @app.get("/auth/google/login")
@@ -375,7 +400,7 @@ async def google_callback(code: str, state: str, db: Session = Depends(get_db)):
         SESSION_SECRET,
         algorithm="HS256",
     )
-    response = RedirectResponse(safe_frontend_destination(claims.get("next")))
+    response = RedirectResponse(frontend_session_destination(claims.get("next"), session_token))
     response.set_cookie(
         key="promise_session", value=session_token, httponly=True, secure=True,
         samesite="none", max_age=7 * 24 * 60 * 60,
@@ -383,9 +408,9 @@ async def google_callback(code: str, state: str, db: Session = Depends(get_db)):
     return response
 
 
-@app.post("/auth/logout")
-def logout():
-    response = RedirectResponse(FRONTEND_URL, status_code=303)
+@app.api_route("/auth/logout", methods=["GET", "POST"])
+def logout(next: str | None = None):
+    response = RedirectResponse(safe_frontend_destination(next), status_code=303)
     response.delete_cookie("promise_session", secure=True, samesite="none")
     return response
 
@@ -453,6 +478,46 @@ def add_progress(promise_id: str, payload: ProgressCreate, db: Session = Depends
     return promise_view(promise)
 
 
+@app.get("/promises/{promise_id}/history")
+def promise_history(promise_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    promise = get_promise_or_404(promise_id, db)
+    ensure_space_access(promise.space_id, user, db)
+    entries = (
+        db.query(ProgressEntry)
+        .filter_by(promise_id=promise.id)
+        .order_by(ProgressEntry.completed_at.asc())
+        .all()
+    )
+    total = Decimal("0")
+    result = []
+    for entry in entries:
+        total += entry.value
+        result.append({
+            "id": entry.id,
+            "value": float(entry.value),
+            "total": float(total),
+            "note": entry.note,
+            "completed_at": entry.completed_at.isoformat(),
+        })
+    return {"promise_id": promise.id, "tracking_mode": promise.tracking_mode, "target_value": float(promise.target_value or 1), "unit": promise.unit, "entries": result}
+
+
+@app.patch("/promises/{promise_id}", response_model=PromiseResponse)
+def update_promise(promise_id: str, payload: PromiseUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    promise = get_promise_or_404(promise_id, db)
+    ensure_space_access(promise.space_id, user, db)
+    if promise.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the promise owner can edit it")
+    changes = payload.model_dump(exclude_unset=True)
+    if "unit" in changes and promise.tracking_mode != TrackingMode.CHECK_OFF and not (changes["unit"] or "").strip():
+        raise HTTPException(status_code=422, detail="A unit is required for this tracking mode")
+    for field, value in changes.items():
+        setattr(promise, field, value.strip() if isinstance(value, str) else value)
+    db.commit()
+    db.refresh(promise)
+    return promise_view(promise)
+
+
 @app.post("/promises/{promise_id}/archive", response_model=PromiseResponse)
 def archive_promise(promise_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     promise = get_promise_or_404(promise_id, db)
@@ -501,6 +566,24 @@ def create_group(payload: GroupCreate, db: Session = Depends(get_db), user: User
     db.add(membership)
     db.commit()
     return {"id": group.id, "space_id": space.id, "name": space.name, "role": "owner", "join_policy": group.join_policy}
+
+
+@app.patch("/groups/{group_id}")
+def update_group(group_id: str, payload: GroupUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    membership = group_membership_or_403(group_id, user.id, db)
+    if membership.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Only an owner or admin can edit group settings")
+    group = db.get(Group, group_id)
+    space = db.get(Space, group.space_id)
+    changes = payload.model_dump(exclude_unset=True)
+    if "name" in changes:
+        space.name = changes["name"].strip()
+    if "join_policy" in changes:
+        group.join_policy = changes["join_policy"]
+    if "timezone" in changes:
+        group.timezone = changes["timezone"].strip()
+    db.commit()
+    return {"id": group.id, "space_id": space.id, "name": space.name, "role": membership.role, "join_policy": group.join_policy, "timezone": group.timezone}
 
 
 @app.post("/groups/{group_id}/invites", status_code=status.HTTP_201_CREATED)
