@@ -23,6 +23,9 @@ class PromiseTrackerApiTests(unittest.TestCase):
         me = self.client.get("/me")
         self.assertEqual(me.status_code, 200)
         personal_space = me.json()["personal_space_id"]
+        profile = self.client.patch("/me", json={"display_name": "API Tester"})
+        self.assertEqual(profile.status_code, 200)
+        self.assertEqual(profile.json()["display_name"], "API Tester")
 
         missing_unit = self.client.post(f"/spaces/{personal_space}/promises", json={
             "title": "Walk 10 kilometres", "tracking_mode": "quantity", "target_value": 10,

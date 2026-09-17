@@ -222,6 +222,18 @@ class PromiseUpdate(BaseModel):
     why_it_matters: str | None = Field(default=None, max_length=500)
 
 
+class ProfileUpdate(BaseModel):
+    display_name: str = Field(min_length=2, max_length=120)
+
+    @field_validator("display_name")
+    @classmethod
+    def trim_display_name(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 2:
+            raise ValueError("Display name must contain at least 2 characters")
+        return value
+
+
 def group_membership_or_403(group_id: str, user_id: str, db: Session) -> Membership:
     membership = db.query(Membership).filter_by(group_id=group_id, user_id=user_id).first()
     if membership is None:
@@ -474,6 +486,13 @@ def me(db: Session = Depends(get_db), user: User = Depends(current_user)):
         "display_name": user.display_name,
         "personal_space_id": personal_space.id,
     }
+
+
+@app.patch("/me")
+def update_me(payload: ProfileUpdate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    user.display_name = payload.display_name
+    db.commit()
+    return {"id": user.id, "email": user.email, "display_name": user.display_name}
 
 
 @app.get("/spaces/{space_id}/promises", response_model=list[PromiseResponse])

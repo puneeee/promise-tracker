@@ -38,6 +38,7 @@ type Item = {
   current_progress: number;
   completion_percent: number;
   why_it_matters: string | null;
+  owner_name: string;
 };
 type Group = {
   id: string;
@@ -91,6 +92,9 @@ export default function App() {
     [logging, setLogging] = useState<Item | null>(null),
     [historyItem, setHistoryItem] = useState<Item | null>(null),
     [editing, setEditing] = useState<Item | null>(null),
+    [profile, setProfile] = useState(false),
+    [categoryFilter, setCategoryFilter] = useState("all"),
+    [ownerFilter, setOwnerFilter] = useState("all"),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
   const group = groups.find((g) => g.space_id === space),
@@ -161,6 +165,9 @@ export default function App() {
     }),
     [items],
   );
+  const categories = useMemo(() => [...new Set(items.map((item) => item.category))].sort(), [items]);
+  const owners = useMemo(() => [...new Set(items.map((item) => item.owner_name))].sort(), [items]);
+  const visibleItems = items.filter((item) => (categoryFilter === "all" || item.category === categoryFilter) && (ownerFilter === "all" || item.owner_name === ownerFilter));
   const log = async (item: Item, value: number, note: string) => {
     const r = await fetch(`${API}/promises/${item.id}/progress`, {
       method: "POST",
@@ -242,7 +249,7 @@ export default function App() {
           </button>
         </nav>
         <footer className="profile">
-          <button className="profile-trigger" onClick={logout}>
+          <button className="profile-trigger" onClick={() => setProfile(true)}>
             <b>{initials}</b>
             <span>
               <strong>{user?.display_name ?? "Loading…"}</strong>
@@ -308,12 +315,16 @@ export default function App() {
             </p>
           </div>
         </section>
-        <div className="heading">
+          <div className="heading">
           <div>
             <h2>Promises</h2>
             <p>Small actions, kept consistently.</p>
           </div>
-          <div className="tabs">
+            <div className="filters">
+              <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} aria-label="Filter by category"><option value="all">All categories</option>{categories.map((category) => <option key={category}>{category}</option>)}</select>
+              {group && <select value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} aria-label="Filter by member"><option value="all">All members</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select>}
+            </div>
+            <div className="tabs">
             {["active", "completed", "archived"].map((tab) => (
               <button
                 key={tab}
@@ -327,9 +338,9 @@ export default function App() {
         </div>
         {loading ? (
           <div className="empty">Loading…</div>
-        ) : items.length ? (
-          <div className="grid">
-            {items.map((item) => (
+          ) : visibleItems.length ? (
+            <div className="grid">
+              {visibleItems.map((item) => (
               <Card
                 key={item.id}
                 item={item}
@@ -447,9 +458,16 @@ export default function App() {
         />
       )}
       {historyItem && <History item={historyItem} close={() => setHistoryItem(null)} />}
+      {profile && user && <ProfileSettings user={user} close={() => setProfile(false)} save={async (display_name) => { const response = await fetch(`${API}/me`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ display_name }) }); if (!response.ok) throw Error(await detail(response, "Could not save profile.")); setUser({ ...user, ...(await response.json()) }); setProfile(false); }} logout={logout} />}
     </main>
   );
 }
+function ProfileSettings({ user, close, save, logout }: { user: User; close: () => void; save: (name: string) => Promise<void>; logout: () => void }) {
+  const [name, setName] = useState(user.display_name), [error, setError] = useState(""), [saving, setSaving] = useState(false);
+  const submit = async (event: FormEvent) => { event.preventDefault(); setSaving(true); try { await save(name.trim()); } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save profile."); } finally { setSaving(false); } };
+  return <div className="modal"><form onSubmit={submit}><button className="close" type="button" onClick={close}>×</button><small>PROFILE</small><h2>Your identity</h2>{error && <p className="form-error">{error}</p>}<label>Display name<input value={name} onChange={(event) => setName(event.target.value)} minLength={2} required /></label><p className="form-hint">This name appears on promises you add to a group.</p><Actions close={close} label={saving ? "Saving…" : "Save profile"} disabled={name.trim().length < 2 || saving} /><button className="logout-link" type="button" onClick={logout}>Log out</button></form></div>
+}
+
 function Card({
   item,
   manage,
@@ -473,6 +491,7 @@ function Card({
         </button>
       </div>
       <h3>{item.title}</h3>
+      <p className="promise-owner"><b>{item.owner_name}</b> is showing up for this</p>
       <p>
         {modes[item.tracking_mode]} ·{" "}
         {item.target_value
