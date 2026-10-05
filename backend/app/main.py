@@ -162,6 +162,13 @@ class SharedPromise(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class SharedPromiseMember(Base):
+    __tablename__ = "shared_promise_members"
+    promise_id: Mapped[str] = mapped_column(ForeignKey("promises.id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    user: Mapped[User] = relationship()
+
+
 class PromiseComment(Base):
     __tablename__ = "promise_comments"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -185,6 +192,7 @@ class PromiseCreate(BaseModel):
     end_date: date | None = None
     why_it_matters: str | None = Field(default=None, max_length=500)
     shared: bool = False
+    shared_member_ids: list[str] = Field(default_factory=list, max_length=100)
 
     @field_validator("title")
     @classmethod
@@ -311,6 +319,7 @@ class PromiseResponse(BaseModel):
     end_date: date | None
     owner_id: str
     is_shared: bool
+    shared_member_names: list[str]
     can_update: bool
 
 
@@ -351,14 +360,26 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     raise HTTPException(status_code=401, detail="Sign in with Google to continue")
 
 
-def promise_view(promise: Promise, viewer_id: str | None = None, db: Session | None = None) -> PromiseResponse:
-    is_shared = bool(db and db.get(SharedPromise, promise.id))
+def promise_access(promise: Promise, viewer_id: str | None, db: Session) -> tuple[bool, list[str]]:
+    is_shared = db.get(SharedPromise, promise.id) is not None
+    shared_members = db.query(SharedPromiseMember).filter_by(promise_id=promise.id).all() if is_shared else []
+    shared_member_names = [member.user.display_name for member in shared_members]
     can_update = viewer_id == promise.owner_id
-    if is_shared and viewer_id and db:
-        space = db.get(Space, promise.space_id)
-        if space and space.type == SpaceType.GROUP.value:
-            group = db.query(Group).filter_by(space_id=space.id).first()
-            can_update = bool(group and db.query(Membership).filter_by(group_id=group.id, user_id=viewer_id).first())
+    space = db.get(Space, promise.space_id)
+    if space and space.type == SpaceType.GROUP.value and viewer_id:
+        group = db.query(Group).filter_by(space_id=space.id).first()
+        membership = group and db.query(Membership).filter_by(group_id=group.id, user_id=viewer_id).first()
+        is_admin = bool(membership and membership.role in {"owner", "admin"})
+        is_participant = any(member.user_id == viewer_id for member in shared_members)
+        can_update = can_update or is_admin or (is_shared and is_participant)
+    return can_update, shared_member_names
+
+
+def promise_view(promise: Promise, viewer_id: str | None = None, db: Session | None = None) -> PromiseResponse:
+    if db is None:
+        raise ValueError("A database session is required to view a promise")
+    is_shared = db.get(SharedPromise, promise.id) is not None
+    can_update, shared_member_names = promise_access(promise, viewer_id, db)
     progress = sum((entry.value for entry in progress_for_current_period(promise)), Decimal("0"))
     if promise.tracking_mode == TrackingMode.CHECK_OFF.value:
         progress = Decimal("1") if progress else Decimal("0")
@@ -371,7 +392,7 @@ def promise_view(promise: Promise, viewer_id: str | None = None, db: Session | N
         is_locked=promise.is_locked, current_progress=progress, completion_percent=percent,
         owner_name=promise.owner.display_name, why_it_matters=promise.why_it_matters,
         description=promise.description, start_date=promise.start_date, end_date=promise.end_date,
-        owner_id=promise.owner_id, is_shared=is_shared, can_update=can_update,
+        owner_id=promise.owner_id, is_shared=is_shared, shared_member_names=shared_member_names, can_update=can_update,
     )
 
 
@@ -397,6 +418,30 @@ def get_promise_or_404(promise_id: str, db: Session) -> Promise:
 
 
 Base.metadata.create_all(engine)
+
+
+def backfill_existing_shared_promise_members() -> None:
+    """Keep existing shared promises usable after participant lists were introduced."""
+    with SessionLocal() as db:
+        legacy = db.query(SharedPromise).all()
+        changed = False
+        for shared in legacy:
+            if db.query(SharedPromiseMember).filter_by(promise_id=shared.promise_id).first():
+                continue
+            promise = db.get(Promise, shared.promise_id)
+            if promise is None:
+                continue
+            group = db.query(Group).filter_by(space_id=promise.space_id).first()
+            if group is None:
+                continue
+            members = db.query(Membership).filter_by(group_id=group.id).all()
+            db.add_all([SharedPromiseMember(promise_id=promise.id, user_id=member.user_id) for member in members])
+            changed = True
+        if changed:
+            db.commit()
+
+
+backfill_existing_shared_promise_members()
 
 app = FastAPI(title="Promise Tracker API", version="0.1.0")
 app.add_middleware(
@@ -566,11 +611,23 @@ def create_promise(payload: PromiseCreate, space_id: str, db: Session = Depends(
         raise HTTPException(status_code=422, detail="A unit is required for this tracking mode")
     if payload.shared and space.type != SpaceType.GROUP.value:
         raise HTTPException(status_code=422, detail="Shared promises can only be created in a group")
-    promise = Promise(id=str(uuid4()), space_id=space_id, owner_id=user.id, **payload.model_dump(exclude={"shared"}))
+    if payload.shared:
+        group = db.query(Group).filter_by(space_id=space_id).first()
+        member_ids = {member.user_id for member in db.query(Membership).filter_by(group_id=group.id).all()}
+        selected_member_ids = set(payload.shared_member_ids)
+        if not selected_member_ids:
+            raise HTTPException(status_code=422, detail="Choose at least one group member for a shared promise")
+        if not selected_member_ids.issubset(member_ids):
+            raise HTTPException(status_code=422, detail="Shared promise participants must belong to this group")
+        selected_member_ids.add(user.id)
+    else:
+        selected_member_ids = set()
+    promise = Promise(id=str(uuid4()), space_id=space_id, owner_id=user.id, **payload.model_dump(exclude={"shared", "shared_member_ids"}))
     db.add(promise)
     db.flush()
     if payload.shared:
         db.add(SharedPromise(promise_id=promise.id))
+        db.add_all([SharedPromiseMember(promise_id=promise.id, user_id=member_id) for member_id in selected_member_ids])
     db.commit()
     db.refresh(promise)
     return promise_view(promise, user.id, db)
@@ -580,9 +637,9 @@ def create_promise(payload: PromiseCreate, space_id: str, db: Session = Depends(
 def add_progress(promise_id: str, payload: ProgressCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     promise = get_promise_or_404(promise_id, db)
     ensure_space_access(promise.space_id, user, db)
-    is_shared = db.get(SharedPromise, promise.id) is not None
-    if promise.owner_id != user.id and not is_shared:
-        raise HTTPException(status_code=403, detail="Only the promise owner can update progress")
+    can_update, _ = promise_access(promise, user.id, db)
+    if not can_update:
+        raise HTTPException(status_code=403, detail="Only the promise owner, a selected participant, or a group admin can update progress")
     if promise.status == PromiseStatus.ARCHIVED.value or promise.is_locked:
         raise HTTPException(status_code=409, detail="This promise cannot receive progress updates")
     if promise.schedule_type == "recurring" and promise.tracking_mode == TrackingMode.CHECK_OFF.value:
@@ -711,6 +768,8 @@ def duplicate_promise(promise_id: str, db: Session = Depends(get_db), user: User
     db.flush()
     if db.get(SharedPromise, source.id):
         db.add(SharedPromise(promise_id=copy.id))
+        source_members = db.query(SharedPromiseMember).filter_by(promise_id=source.id).all()
+        db.add_all([SharedPromiseMember(promise_id=copy.id, user_id=member.user_id) for member in source_members])
     db.commit()
     db.refresh(copy)
     return promise_view(copy, user.id, db)
@@ -817,6 +876,7 @@ def delete_group(group_id: str, db: Session = Depends(get_db), user: User = Depe
     if promise_ids:
         db.query(ProgressEntry).filter(ProgressEntry.promise_id.in_(promise_ids)).delete(synchronize_session=False)
         db.query(PromiseComment).filter(PromiseComment.promise_id.in_(promise_ids)).delete(synchronize_session=False)
+        db.query(SharedPromiseMember).filter(SharedPromiseMember.promise_id.in_(promise_ids)).delete(synchronize_session=False)
         db.query(SharedPromise).filter(SharedPromise.promise_id.in_(promise_ids)).delete(synchronize_session=False)
     db.query(Promise).filter_by(space_id=group.space_id).delete(synchronize_session=False)
     db.query(JoinRequest).filter_by(group_id=group_id).delete(synchronize_session=False)

@@ -80,7 +80,7 @@ class PromiseTrackerApiTests(unittest.TestCase):
 
         shared = self.client.post(f"/spaces/{group.json()['space_id']}/promises", json={
             "title": "Run five kilometres together", "tracking_mode": "quantity",
-            "target_value": 5, "unit": "km", "shared": True,
+            "target_value": 5, "unit": "km", "shared": True, "shared_member_ids": ["demo-user"],
         })
         self.assertEqual(shared.status_code, 201)
         self.assertTrue(shared.json()["is_shared"])

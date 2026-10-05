@@ -44,6 +44,7 @@ type Item = {
   start_date: string | null;
   end_date: string | null;
   is_shared: boolean;
+  shared_member_names: string[];
   can_update: boolean;
 };
 type Group = {
@@ -359,6 +360,7 @@ export default function App() {
                 item={item}
                 manage={() => setAction(item)}
                 log={() => setLogging(item)}
+                comments={group ? () => setCommenting(item) : undefined}
               />
             ))}
           </div>
@@ -383,6 +385,8 @@ export default function App() {
         <PromiseForm
           space={space}
           isGroup={Boolean(group)}
+          groupId={group?.id}
+          currentUserId={user?.id ?? ""}
           close={() => setShowNew(false)}
           done={() => {
             setShowNew(false);
@@ -491,10 +495,12 @@ function Card({
   item,
   manage,
   log,
+  comments,
 }: {
   item: Item;
   manage: () => void;
   log: () => void;
+  comments?: () => void;
 }) {
   return (
     <article className={item.completion_percent >= 100 ? "complete" : ""}>
@@ -508,9 +514,10 @@ function Card({
         >
           •••
         </button>
+        {comments && <button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={comments}>◌</button>}
       </div>
       <h3>{item.title}</h3>
-      <p className="promise-owner"><b>{item.is_shared ? "Shared promise" : item.owner_name}</b>{item.is_shared ? " · every member can contribute" : " is showing up for this"}</p>
+      <p className="promise-owner"><b>{item.is_shared ? "Shared with" : item.owner_name}</b>{item.is_shared ? ` · ${item.shared_member_names.join(", ")}` : " is showing up for this"}</p>
       <p>
         {modes[item.tracking_mode]} ·{" "}
         {item.target_value
@@ -524,18 +531,16 @@ function Card({
       </div>
       <footer>
         <small>{item.completion_percent}% complete</small>
-        <button
-          disabled={!item.can_update || item.is_locked || item.completion_percent >= 100}
+        {item.can_update && <button
+          disabled={item.is_locked || item.completion_percent >= 100}
           onClick={log}
         >
-          {!item.can_update
-            ? "Owner only"
-            : item.is_locked
+          {item.is_locked
             ? "Locked"
             : item.tracking_mode === "check_off"
               ? "Mark done"
               : "Log progress"}
-        </button>
+        </button>}
       </footer>
     </article>
   );
@@ -1078,11 +1083,15 @@ function Actions({
 function PromiseForm({
   space,
   isGroup,
+  groupId,
+  currentUserId,
   close,
   done,
 }: {
   space: string;
   isGroup: boolean;
+  groupId?: string;
+  currentUserId: string;
   close: () => void;
   done: () => void;
 }) {
@@ -1093,9 +1102,22 @@ function PromiseForm({
     [start, setStart] = useState(""),
     [end, setEnd] = useState(""),
     [shared, setShared] = useState(false),
+    [members, setMembers] = useState<Member[]>([]),
+    [sharedMemberIds, setSharedMemberIds] = useState<string[]>([]),
     [error, setError] = useState(""),
     [saving, setSaving] = useState(false);
   const numeric = mode !== "check_off";
+  useEffect(() => {
+    if (!groupId) return;
+    void (async () => {
+      const response = await fetch(`${API}/groups/${groupId}/members`);
+      if (response.ok) setMembers(await response.json());
+    })();
+  }, [groupId]);
+  const toggleParticipant = (id: string) => {
+    if (id === currentUserId) return;
+    setSharedMemberIds((current) => current.includes(id) ? current.filter((memberId) => memberId !== id) : [...current, id]);
+  };
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
@@ -1120,6 +1142,7 @@ function PromiseForm({
           end_date: schedule === "date_range" ? end : null,
           why_it_matters: form.get("why") || null,
           shared,
+          shared_member_ids: shared ? sharedMemberIds : [],
         }),
       });
       if (!r.ok) throw Error(await detail(r, "Could not create promise."));
@@ -1210,7 +1233,8 @@ function PromiseForm({
           </label>
         </div>
         {schedule === "date_range" && <div className="row"><label>Start date<input type="date" value={start} onChange={(e) => { setStart(e.target.value); if (end && end < e.target.value) setEnd(""); }} required /></label><label>End date<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} min={start || undefined} disabled={!start} required /></label></div>}
-        {isGroup && <label className="shared-toggle"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /> Shared group promise <span>Any group member can contribute progress.</span></label>}
+        {isGroup && <label className="shared-toggle"><input type="checkbox" checked={shared} onChange={(event) => { const enabled = event.target.checked; setShared(enabled); setSharedMemberIds(enabled && currentUserId ? [currentUserId] : []); }} /> Shared group promise <span>Choose exactly who can contribute. Group admins can always help update progress.</span></label>}
+        {isGroup && shared && <fieldset className="participant-picker"><legend>Who is sharing this promise?</legend>{members.map((member) => <label key={member.user_id}><input type="checkbox" checked={sharedMemberIds.includes(member.user_id)} disabled={member.user_id === currentUserId} onChange={() => toggleParticipant(member.user_id)} /> {member.name}{member.user_id === currentUserId ? " (you)" : ""}</label>)}</fieldset>}
         <label>
           Why does this matter?
           <textarea name="why" rows={3} />
@@ -1219,7 +1243,7 @@ function PromiseForm({
           close={close}
           label={saving ? "Creating…" : "Create promise"}
           disabled={
-            title.trim().length < 5 || (numeric && !unit.trim()) || saving
+            title.trim().length < 5 || (numeric && !unit.trim()) || (shared && !sharedMemberIds.length) || saving
           }
         />
       </form>
