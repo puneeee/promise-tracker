@@ -510,7 +510,7 @@ function Card({
         >
           •••
         </button>
-        {comments && <button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={comments}>◌</button>}
+        {comments && <button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={comments}><CommentIcon /></button>}
       </div>
       <h3>{item.title}</h3>
       <p className="promise-owner"><b>{item.is_shared ? "Shared with" : item.owner_name}</b>{item.is_shared ? ` · ${item.shared_member_names.join(", ")}` : " is showing up for this"}</p>
@@ -541,6 +541,9 @@ function Card({
     </article>
   );
 }
+function CommentIcon() {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a7.5 7.5 0 0 1-8 7.48 8.7 8.7 0 0 1-3.3-.67L4 20l1.34-3.65A7.35 7.35 0 0 1 4 11.5 7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.5Z" /><path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01" /></svg>;
+}
 function PromiseRow({
   item,
   manage,
@@ -559,7 +562,7 @@ function PromiseRow({
       <div className="row-promise"><b>{item.title}</b><small>{item.category} · {modes[item.tracking_mode]}</small></div>
       <div className="row-member"><b>{item.is_shared ? "Shared with" : "Owner"}</b><span>{people}</span></div>
       <div className="row-progress"><b>{item.target_value ? `${item.current_progress} / ${item.target_value} ${item.unit ?? ""}` : `${item.completion_percent}%`}</b><div className="track"><i style={{ width: `${item.completion_percent}%` }} /></div></div>
-      <div className="row-actions"><button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={comments}>◌</button>{item.can_update && <button className="row-log" disabled={item.is_locked || item.completion_percent >= 100} onClick={log}>{item.tracking_mode === "check_off" ? "Mark done" : "Log progress"}</button>}<button className="row-menu" aria-label="Manage promise" onClick={manage}>•••</button></div>
+      <div className="row-actions"><button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={comments}><CommentIcon /></button>{item.can_update && <button className="row-log" disabled={item.is_locked || item.completion_percent >= 100} onClick={log}>{item.tracking_mode === "check_off" ? "Mark done" : "Log progress"}</button>}<button className="row-menu" aria-label="Manage promise" onClick={manage}>•••</button></div>
     </article>
   );
 }
