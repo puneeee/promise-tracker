@@ -185,6 +185,16 @@ class PromiseComment(Base):
     author: Mapped[User] = relationship()
 
 
+class Notification(Base):
+    __tablename__ = "notifications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    message: Mapped[str] = mapped_column(String(500))
+    promise_id: Mapped[str | None] = mapped_column(ForeignKey("promises.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class PromiseCreate(BaseModel):
     title: str = Field(min_length=5, max_length=80)
     description: str | None = Field(default=None, max_length=500)
@@ -364,6 +374,14 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     if APP_ENV != "production":
         return development_user(db)
     raise HTTPException(status_code=401, detail="Sign in with Google to continue")
+
+
+def utc_iso(value: datetime) -> str:
+    return value.replace(tzinfo=timezone.utc).isoformat()
+
+
+def create_notifications(db: Session, user_ids: set[str], message: str, promise_id: str | None = None) -> None:
+    db.add_all([Notification(id=str(uuid4()), user_id=user_id, message=message, promise_id=promise_id) for user_id in user_ids])
 
 
 def promise_access(promise: Promise, viewer_id: str | None, db: Session) -> tuple[bool, list[str]]:
@@ -670,9 +688,21 @@ def add_progress(promise_id: str, payload: ProgressCreate, db: Session = Depends
     if promise.schedule_type == "recurring" and promise.tracking_mode == TrackingMode.CHECK_OFF.value:
         if progress_for_current_period(promise):
             raise HTTPException(status_code=409, detail="This promise is already complete for the current period")
+    previous_progress = sum((entry.value for entry in progress_for_current_period(promise)), Decimal("0"))
     db.add(ProgressEntry(id=str(uuid4()), promise_id=promise.id, owner_id=user.id, value=payload.value, note=payload.note))
     db.flush()
+    db.expire(promise, ["progress_entries"])
     current = sum((entry.value for entry in progress_for_current_period(promise)), Decimal("0"))
+    space = db.get(Space, promise.space_id)
+    if space and space.type == SpaceType.GROUP.value:
+        group = db.query(Group).filter_by(space_id=space.id).first()
+        target = promise.target_value or Decimal("1")
+        previous_percent = int((previous_progress / target) * 100) if target else 0
+        current_percent = min(100, int((current / target) * 100)) if target else 0
+        crossed = [milestone for milestone in (25, 50, 75, 100) if previous_percent < milestone <= current_percent]
+        if crossed and group:
+            recipients = {member.user_id for member in db.query(Membership).filter_by(group_id=group.id).all()} - {user.id}
+            create_notifications(db, recipients, f"{user.display_name} reached {crossed[-1]}% on “{promise.title}”", promise.id)
     if promise.schedule_type == "date_range" and promise.target_value and current >= promise.target_value:
         promise.status = PromiseStatus.COMPLETED.value
     db.commit()
@@ -705,7 +735,7 @@ def promise_history(promise_id: str, db: Session = Depends(get_db), user: User =
             "total": float(total),
             "period_total": float(period_total),
             "note": entry.note,
-            "completed_at": entry.completed_at.isoformat(),
+            "completed_at": utc_iso(entry.completed_at),
             "in_current_period": in_current_period,
             "author_name": db.get(User, entry.owner_id).display_name,
         })
@@ -717,7 +747,7 @@ def list_comments(promise_id: str, db: Session = Depends(get_db), user: User = D
     promise = get_promise_or_404(promise_id, db)
     ensure_space_access(promise.space_id, user, db)
     comments = db.query(PromiseComment).filter_by(promise_id=promise.id).order_by(PromiseComment.created_at.asc()).all()
-    return [{"id": comment.id, "body": comment.body, "author_name": comment.author.display_name, "created_at": comment.created_at.isoformat()} for comment in comments]
+    return [{"id": comment.id, "body": comment.body, "author_name": comment.author.display_name, "created_at": utc_iso(comment.created_at)} for comment in comments]
 
 
 @app.post("/promises/{promise_id}/comments", status_code=status.HTTP_201_CREATED)
@@ -726,9 +756,24 @@ def add_comment(promise_id: str, payload: CommentCreate, db: Session = Depends(g
     ensure_space_access(promise.space_id, user, db)
     comment = PromiseComment(id=str(uuid4()), promise_id=promise.id, author_id=user.id, body=payload.body)
     db.add(comment)
+    if promise.owner_id != user.id:
+        create_notifications(db, {promise.owner_id}, f"{user.display_name} commented on “{promise.title}”", promise.id)
     db.commit()
     db.refresh(comment)
-    return {"id": comment.id, "body": comment.body, "author_name": user.display_name, "created_at": comment.created_at.isoformat()}
+    return {"id": comment.id, "body": comment.body, "author_name": user.display_name, "created_at": utc_iso(comment.created_at)}
+
+
+@app.get("/notifications")
+def list_notifications(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    notifications = db.query(Notification).filter_by(user_id=user.id).order_by(Notification.created_at.desc()).limit(50).all()
+    return {"unread_count": sum(item.read_at is None for item in notifications), "items": [{"id": item.id, "message": item.message, "promise_id": item.promise_id, "created_at": utc_iso(item.created_at), "read": item.read_at is not None} for item in notifications]}
+
+
+@app.post("/notifications/read")
+def mark_notifications_read(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    db.query(Notification).filter_by(user_id=user.id, read_at=None).update({Notification.read_at: datetime.now(timezone.utc)}, synchronize_session=False)
+    db.commit()
+    return {"status": "ok"}
 
 
 @app.patch("/promises/{promise_id}", response_model=PromiseResponse)

@@ -74,6 +74,7 @@ type Entry = {
   in_current_period: boolean;
   author_name: string;
 };
+type NotificationItem = { id: string; message: string; promise_id: string | null; created_at: string; read: boolean };
 const modes: Record<string, string> = {
   check_off: "Check off",
   quantity: "Quantity",
@@ -87,6 +88,7 @@ const formatQuantity = (value: number | string | null) => {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? String(Number(numeric.toFixed(6))) : String(value);
 };
+const formatLocalTime = (value: string) => new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 async function detail(response: Response, fallback: string) {
   const body = await response.json().catch(() => ({}));
   return body.detail || fallback;
@@ -111,10 +113,20 @@ export default function App() {
     [ownerFilter, setOwnerFilter] = useState("all"),
     [groupView, setGroupView] = useState<"cards" | "rows">("cards"),
     [theme, setTheme] = useState<"light" | "dark">(() => localStorage.getItem("promise_theme") === "dark" ? "dark" : "light"),
+    [notifications, setNotifications] = useState<NotificationItem[]>([]),
+    [unreadCount, setUnreadCount] = useState(0),
+    [showNotifications, setShowNotifications] = useState(false),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
   const group = groups.find((g) => g.space_id === space),
     manage = group?.role === "owner" || group?.role === "admin";
+  const loadNotifications = async () => {
+    const response = await fetch(`${API}/notifications`);
+    if (!response.ok) return;
+    const inbox = await response.json();
+    setNotifications(inbox.items);
+    setUnreadCount(inbox.unread_count);
+  };
   const load = async () => {
     if (!space) return;
     setLoading(true);
@@ -142,6 +154,7 @@ export default function App() {
       setUser(account);
       setGroups(owned);
       setSpace(account.personal_space_id);
+      void loadNotifications();
       const invite = new URLSearchParams(location.search).get("invite");
       if (invite) {
         const join = await fetch(
@@ -243,6 +256,15 @@ export default function App() {
       `${API}/auth/logout?next=${encodeURIComponent(location.href)}`,
     );
   };
+  const openNotifications = async () => {
+    const nextOpen = !showNotifications;
+    setShowNotifications(nextOpen);
+    if (nextOpen && unreadCount) {
+      await fetch(`${API}/notifications/read`, { method: "POST" });
+      setUnreadCount(0);
+      setNotifications((current) => current.map((item) => ({ ...item, read: true })));
+    }
+  };
   const initials = (user?.display_name || "U")[0].toUpperCase();
   return (
     <main className={`app ${theme === "dark" ? "dark" : ""}`}>
@@ -294,6 +316,7 @@ export default function App() {
                 Group settings
               </button>
             )}
+            <div className="notification-wrap"><button className="notification-button" onClick={() => void openNotifications()} aria-label="Notifications" title="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>{unreadCount > 0 && <span>{unreadCount > 9 ? "9+" : unreadCount}</span>}</button>{showNotifications && <NotificationMenu items={notifications} />}</div>
             <button className="theme-toggle" onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")} aria-label="Toggle color theme" title={theme === "dark" ? "Use light mode" : "Use dark mode"}>{theme === "dark" ? "☀" : "◐"}</button>
             <button className="primary" onClick={() => setShowNew(true)}>
               ＋ New promise
@@ -495,6 +518,10 @@ function ProfileSettings({ user, close, save, logout }: { user: User; close: () 
   const [name, setName] = useState(user.display_name), [error, setError] = useState(""), [saving, setSaving] = useState(false);
   const submit = async (event: FormEvent) => { event.preventDefault(); setSaving(true); try { await save(name.trim()); } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save profile."); } finally { setSaving(false); } };
   return <div className="modal"><form onSubmit={submit}><button className="close" type="button" onClick={close}>×</button><small>PROFILE</small><h2>Your identity</h2>{error && <p className="form-error">{error}</p>}<label>Display name<input value={name} onChange={(event) => setName(event.target.value)} minLength={2} required /></label><p className="form-hint">This name appears on promises you add to a group.</p><Actions close={close} label={saving ? "Saving…" : "Save profile"} disabled={name.trim().length < 2 || saving} /><button className="logout-link" type="button" onClick={logout}>Log out</button></form></div>
+}
+
+function NotificationMenu({ items }: { items: NotificationItem[] }) {
+  return <section className="notification-menu"><b>Notifications</b>{items.length ? items.map((item) => <article className={item.read ? "" : "unread"} key={item.id}><p>{item.message}</p><small>{formatLocalTime(item.created_at)}</small></article>) : <p className="no-notifications">You are all caught up.</p>}</section>;
 }
 
 function Card({
@@ -1023,7 +1050,7 @@ function Comments({ item, close }: { item: Item; close: () => void }) {
   const loadComments = async () => { const response = await fetch(`${API}/promises/${item.id}/comments`); if (!response.ok) { setError(await detail(response, "Could not load comments.")); return; } setComments(await response.json()); };
   useEffect(() => { void loadComments(); }, [item.id]);
   const submit = async (event: FormEvent) => { event.preventDefault(); const response = await fetch(`${API}/promises/${item.id}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body }) }); if (!response.ok) { setError(await detail(response, "Could not add comment.")); return; } setBody(""); void loadComments(); };
-  return <div className="modal"><section className="comments-panel"><button className="close" onClick={close}>×</button><small>GROUP DISCUSSION</small><h2>{item.title}</h2>{error && <p className="form-error">{error}</p>}<div className="comment-list">{comments.length ? comments.map((comment) => <article key={comment.id}><b>{comment.author_name}</b><p>{comment.body}</p><small>{new Date(comment.created_at).toLocaleString()}</small></article>) : <p>No comments yet. Start the discussion.</p>}</div><form onSubmit={submit}><label>Add a comment<textarea value={body} onChange={(event) => setBody(event.target.value)} rows={3} maxLength={1000} required /></label><button className="primary" disabled={!body.trim()}>Post comment</button></form></section></div>;
+  return <div className="modal"><section className="comments-panel"><button className="close" onClick={close}>×</button><small>DISCUSSION &amp; NOTES</small><h2>{item.title}</h2>{error && <p className="form-error">{error}</p>}<div className="comment-list">{comments.length ? comments.map((comment) => <article key={comment.id}><b>{comment.author_name}</b><p>{comment.body}</p><small>{formatLocalTime(comment.created_at)}</small></article>) : <p>No comments yet. Start the discussion.</p>}</div><form onSubmit={submit}><label>Add a comment<textarea value={body} onChange={(event) => setBody(event.target.value)} rows={3} maxLength={1000} required /></label><button className="primary" disabled={!body.trim()}>Post comment</button></form></section></div>;
 }
 
 function History({ item, close }: { item: Item; close: () => void }) {
@@ -1076,7 +1103,7 @@ function History({ item, close }: { item: Item; close: () => void }) {
                     +{formatQuantity(x.value)} {item.unit ?? ""}
                   </b>
                   <span>
-                    {new Date(x.completed_at).toLocaleString()}
+                    {formatLocalTime(x.completed_at)}
                     {` · ${x.author_name}`}
                     {x.note ? ` · ${x.note}` : ""}
                     {period && !x.in_current_period ? " · earlier period" : ""}
