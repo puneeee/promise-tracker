@@ -619,7 +619,6 @@ def create_promise(payload: PromiseCreate, space_id: str, db: Session = Depends(
             raise HTTPException(status_code=422, detail="Choose at least one group member for a shared promise")
         if not selected_member_ids.issubset(member_ids):
             raise HTTPException(status_code=422, detail="Shared promise participants must belong to this group")
-        selected_member_ids.add(user.id)
     else:
         selected_member_ids = set()
     promise = Promise(id=str(uuid4()), space_id=space_id, owner_id=user.id, **payload.model_dump(exclude={"shared", "shared_member_ids"}))

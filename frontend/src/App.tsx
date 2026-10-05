@@ -1132,10 +1132,7 @@ function PromiseForm({
       if (response.ok) setMembers(await response.json());
     })();
   }, [groupId]);
-  const toggleParticipant = (id: string) => {
-    if (id === currentUserId) return;
-    setSharedMemberIds((current) => current.includes(id) ? current.filter((memberId) => memberId !== id) : [...current, id]);
-  };
+  const toggleParticipant = (id: string) => setSharedMemberIds((current) => current.includes(id) ? current.filter((memberId) => memberId !== id) : [...current, id]);
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
@@ -1251,8 +1248,8 @@ function PromiseForm({
           </label>
         </div>
         {schedule === "date_range" && <div className="row"><label>Start date<input type="date" value={start} onChange={(e) => { setStart(e.target.value); if (end && end < e.target.value) setEnd(""); }} required /></label><label>End date<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} min={start || undefined} disabled={!start} required /></label></div>}
-        {isGroup && <label className="shared-toggle"><input type="checkbox" checked={shared} onChange={(event) => { const enabled = event.target.checked; setShared(enabled); setSharedMemberIds(enabled && currentUserId ? [currentUserId] : []); }} /> Shared group promise <span>Choose exactly who can contribute. Group admins can always help update progress.</span></label>}
-        {isGroup && shared && <fieldset className="participant-picker"><legend>Who is sharing this promise?</legend>{members.map((member) => <label key={member.user_id}><input type="checkbox" checked={sharedMemberIds.includes(member.user_id)} disabled={member.user_id === currentUserId} onChange={() => toggleParticipant(member.user_id)} /> {member.name}{member.user_id === currentUserId ? " (you)" : ""}</label>)}</fieldset>}
+        {isGroup && <label className="shared-toggle"><input type="checkbox" checked={shared} onChange={(event) => { setShared(event.target.checked); setSharedMemberIds([]); }} /> Shared group promise <span>Choose exactly who can contribute. Group admins can always help update progress.</span></label>}
+        {isGroup && shared && <fieldset className="participant-picker"><legend>Who is sharing this promise?</legend>{members.map((member) => <label key={member.user_id}><input type="checkbox" checked={sharedMemberIds.includes(member.user_id)} onChange={() => toggleParticipant(member.user_id)} /> {member.name}{member.user_id === currentUserId ? " (you)" : ""}</label>)}</fieldset>}
         <label>
           Why does this matter?
           <textarea name="why" rows={3} />
