@@ -156,6 +156,22 @@ class ProgressEntry(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class SharedPromise(Base):
+    __tablename__ = "shared_promises"
+    promise_id: Mapped[str] = mapped_column(ForeignKey("promises.id"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class PromiseComment(Base):
+    __tablename__ = "promise_comments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    promise_id: Mapped[str] = mapped_column(ForeignKey("promises.id"), index=True)
+    author_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    body: Mapped[str] = mapped_column(String(1000))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    author: Mapped[User] = relationship()
+
+
 class PromiseCreate(BaseModel):
     title: str = Field(min_length=5, max_length=80)
     description: str | None = Field(default=None, max_length=500)
@@ -168,6 +184,7 @@ class PromiseCreate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     why_it_matters: str | None = Field(default=None, max_length=500)
+    shared: bool = False
 
     @field_validator("title")
     @classmethod
@@ -214,12 +231,28 @@ class GroupUpdate(BaseModel):
 
 
 class PromiseUpdate(BaseModel):
+    description: str | None = Field(default=None, max_length=500)
     title: str | None = Field(default=None, min_length=5, max_length=80)
     category: str | None = Field(default=None, min_length=1, max_length=60)
     frequency: str | None = Field(default=None, min_length=1, max_length=40)
     target_value: Decimal | None = Field(default=None, gt=0)
     unit: str | None = Field(default=None, max_length=30)
     why_it_matters: str | None = Field(default=None, max_length=500)
+    schedule_type: str | None = Field(default=None, pattern="^(recurring|date_range)$")
+    start_date: date | None = None
+    end_date: date | None = None
+
+
+class CommentCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("body")
+    @classmethod
+    def trim_body(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Comment cannot be blank")
+        return value
 
 
 class ProfileUpdate(BaseModel):
@@ -273,6 +306,12 @@ class PromiseResponse(BaseModel):
     completion_percent: int
     owner_name: str
     why_it_matters: str | None
+    description: str | None
+    start_date: date | None
+    end_date: date | None
+    owner_id: str
+    is_shared: bool
+    can_update: bool
 
 
 def get_db():
@@ -312,7 +351,14 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     raise HTTPException(status_code=401, detail="Sign in with Google to continue")
 
 
-def promise_view(promise: Promise) -> PromiseResponse:
+def promise_view(promise: Promise, viewer_id: str | None = None, db: Session | None = None) -> PromiseResponse:
+    is_shared = bool(db and db.get(SharedPromise, promise.id))
+    can_update = viewer_id == promise.owner_id
+    if is_shared and viewer_id and db:
+        space = db.get(Space, promise.space_id)
+        if space and space.type == SpaceType.GROUP.value:
+            group = db.query(Group).filter_by(space_id=space.id).first()
+            can_update = bool(group and db.query(Membership).filter_by(group_id=group.id, user_id=viewer_id).first())
     progress = sum((entry.value for entry in progress_for_current_period(promise)), Decimal("0"))
     if promise.tracking_mode == TrackingMode.CHECK_OFF.value:
         progress = Decimal("1") if progress else Decimal("0")
@@ -324,6 +370,8 @@ def promise_view(promise: Promise) -> PromiseResponse:
         schedule_type=promise.schedule_type, frequency=promise.frequency, status=promise.status,
         is_locked=promise.is_locked, current_progress=progress, completion_percent=percent,
         owner_name=promise.owner.display_name, why_it_matters=promise.why_it_matters,
+        description=promise.description, start_date=promise.start_date, end_date=promise.end_date,
+        owner_id=promise.owner_id, is_shared=is_shared, can_update=can_update,
     )
 
 
@@ -504,30 +552,36 @@ def list_promises(space_id: str, view: str = "active", db: Session = Depends(get
     if view != "all":
         query = query.filter_by(status=view)
     promises = query.order_by(Promise.created_at.desc()).all()
-    return [promise_view(promise) for promise in promises]
+    return [promise_view(promise, user.id, db) for promise in promises]
 
 
 @app.post("/spaces/{space_id}/promises", response_model=PromiseResponse, status_code=status.HTTP_201_CREATED)
 def create_promise(payload: PromiseCreate, space_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    ensure_space_access(space_id, user, db)
+    space = ensure_space_access(space_id, user, db)
     if payload.schedule_type == "date_range" and (not payload.start_date or not payload.end_date or payload.end_date < payload.start_date):
         raise HTTPException(status_code=422, detail="A date-range promise needs a valid start and end date")
     if payload.tracking_mode != TrackingMode.CHECK_OFF and payload.target_value is None:
         raise HTTPException(status_code=422, detail="A target value is required for this tracking mode")
     if payload.tracking_mode != TrackingMode.CHECK_OFF and not (payload.unit or "").strip():
         raise HTTPException(status_code=422, detail="A unit is required for this tracking mode")
-    promise = Promise(id=str(uuid4()), space_id=space_id, owner_id=user.id, **payload.model_dump())
+    if payload.shared and space.type != SpaceType.GROUP.value:
+        raise HTTPException(status_code=422, detail="Shared promises can only be created in a group")
+    promise = Promise(id=str(uuid4()), space_id=space_id, owner_id=user.id, **payload.model_dump(exclude={"shared"}))
     db.add(promise)
+    db.flush()
+    if payload.shared:
+        db.add(SharedPromise(promise_id=promise.id))
     db.commit()
     db.refresh(promise)
-    return promise_view(promise)
+    return promise_view(promise, user.id, db)
 
 
 @app.post("/promises/{promise_id}/progress", response_model=PromiseResponse)
 def add_progress(promise_id: str, payload: ProgressCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     promise = get_promise_or_404(promise_id, db)
     ensure_space_access(promise.space_id, user, db)
-    if promise.owner_id != user.id:
+    is_shared = db.get(SharedPromise, promise.id) is not None
+    if promise.owner_id != user.id and not is_shared:
         raise HTTPException(status_code=403, detail="Only the promise owner can update progress")
     if promise.status == PromiseStatus.ARCHIVED.value or promise.is_locked:
         raise HTTPException(status_code=409, detail="This promise cannot receive progress updates")
@@ -541,7 +595,7 @@ def add_progress(promise_id: str, payload: ProgressCreate, db: Session = Depends
         promise.status = PromiseStatus.COMPLETED.value
     db.commit()
     db.refresh(promise)
-    return promise_view(promise)
+    return promise_view(promise, user.id, db)
 
 
 @app.get("/promises/{promise_id}/history")
@@ -571,8 +625,32 @@ def promise_history(promise_id: str, db: Session = Depends(get_db), user: User =
             "note": entry.note,
             "completed_at": entry.completed_at.isoformat(),
             "in_current_period": in_current_period,
+            "author_name": db.get(User, entry.owner_id).display_name,
         })
     return {"promise_id": promise.id, "tracking_mode": promise.tracking_mode, "target_value": float(promise.target_value or 1), "unit": promise.unit, "period_start": period_start.isoformat() if period_start else None, "entries": result}
+
+
+@app.get("/promises/{promise_id}/comments")
+def list_comments(promise_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    promise = get_promise_or_404(promise_id, db)
+    space = ensure_space_access(promise.space_id, user, db)
+    if space.type != SpaceType.GROUP.value:
+        raise HTTPException(status_code=403, detail="Comments are available for group promises only")
+    comments = db.query(PromiseComment).filter_by(promise_id=promise.id).order_by(PromiseComment.created_at.asc()).all()
+    return [{"id": comment.id, "body": comment.body, "author_name": comment.author.display_name, "created_at": comment.created_at.isoformat()} for comment in comments]
+
+
+@app.post("/promises/{promise_id}/comments", status_code=status.HTTP_201_CREATED)
+def add_comment(promise_id: str, payload: CommentCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    promise = get_promise_or_404(promise_id, db)
+    space = ensure_space_access(promise.space_id, user, db)
+    if space.type != SpaceType.GROUP.value:
+        raise HTTPException(status_code=403, detail="Comments are available for group promises only")
+    comment = PromiseComment(id=str(uuid4()), promise_id=promise.id, author_id=user.id, body=payload.body)
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    return {"id": comment.id, "body": comment.body, "author_name": user.display_name, "created_at": comment.created_at.isoformat()}
 
 
 @app.patch("/promises/{promise_id}", response_model=PromiseResponse)
@@ -584,11 +662,16 @@ def update_promise(promise_id: str, payload: PromiseUpdate, db: Session = Depend
     changes = payload.model_dump(exclude_unset=True)
     if "unit" in changes and promise.tracking_mode != TrackingMode.CHECK_OFF and not (changes["unit"] or "").strip():
         raise HTTPException(status_code=422, detail="A unit is required for this tracking mode")
+    start_date = changes.get("start_date", promise.start_date)
+    end_date = changes.get("end_date", promise.end_date)
+    schedule_type = changes.get("schedule_type", promise.schedule_type)
+    if schedule_type == "date_range" and (not start_date or not end_date or end_date < start_date):
+        raise HTTPException(status_code=422, detail="A date-range promise needs a valid start and end date")
     for field, value in changes.items():
         setattr(promise, field, value.strip() if isinstance(value, str) else value)
     db.commit()
     db.refresh(promise)
-    return promise_view(promise)
+    return promise_view(promise, user.id, db)
 
 
 @app.post("/promises/{promise_id}/archive", response_model=PromiseResponse)
@@ -598,7 +681,7 @@ def archive_promise(promise_id: str, db: Session = Depends(get_db), user: User =
         raise HTTPException(status_code=403, detail="Only the promise owner can archive it")
     promise.status = PromiseStatus.ARCHIVED.value
     db.commit()
-    return promise_view(promise)
+    return promise_view(promise, user.id, db)
 
 
 @app.post("/promises/{promise_id}/restore", response_model=PromiseResponse)
@@ -612,7 +695,7 @@ def restore_promise(promise_id: str, db: Session = Depends(get_db), user: User =
     promise.status = PromiseStatus.ACTIVE.value
     db.commit()
     db.refresh(promise)
-    return promise_view(promise)
+    return promise_view(promise, user.id, db)
 
 
 @app.post("/promises/{promise_id}/duplicate", response_model=PromiseResponse, status_code=status.HTTP_201_CREATED)
@@ -625,9 +708,12 @@ def duplicate_promise(promise_id: str, db: Session = Depends(get_db), user: User
         target_value=source.target_value, schedule_type=source.schedule_type, frequency=source.frequency,
         start_date=source.start_date, end_date=source.end_date, status=PromiseStatus.ACTIVE.value, why_it_matters=source.why_it_matters)
     db.add(copy)
+    db.flush()
+    if db.get(SharedPromise, source.id):
+        db.add(SharedPromise(promise_id=copy.id))
     db.commit()
     db.refresh(copy)
-    return promise_view(copy)
+    return promise_view(copy, user.id, db)
 
 
 @app.get("/groups")
@@ -730,6 +816,8 @@ def delete_group(group_id: str, db: Session = Depends(get_db), user: User = Depe
     promise_ids = [promise.id for promise in db.query(Promise).filter_by(space_id=group.space_id).all()]
     if promise_ids:
         db.query(ProgressEntry).filter(ProgressEntry.promise_id.in_(promise_ids)).delete(synchronize_session=False)
+        db.query(PromiseComment).filter(PromiseComment.promise_id.in_(promise_ids)).delete(synchronize_session=False)
+        db.query(SharedPromise).filter(SharedPromise.promise_id.in_(promise_ids)).delete(synchronize_session=False)
     db.query(Promise).filter_by(space_id=group.space_id).delete(synchronize_session=False)
     db.query(JoinRequest).filter_by(group_id=group_id).delete(synchronize_session=False)
     db.query(Invite).filter_by(group_id=group_id).delete(synchronize_session=False)
@@ -785,6 +873,6 @@ def group_dashboard(group_id: str, db: Session = Depends(get_db), user: User = D
     return {
         "group_id": group_id,
         "members": [{"name": item.user.display_name, "role": item.role} for item in members],
-        "promises": [promise_view(item) for item in promises],
+        "promises": [promise_view(item, user.id, db) for item in promises],
         "upcoming_check_ins": [],
     }

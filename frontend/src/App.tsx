@@ -39,6 +39,12 @@ type Item = {
   completion_percent: number;
   why_it_matters: string | null;
   owner_name: string;
+  owner_id: string;
+  description: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  is_shared: boolean;
+  can_update: boolean;
 };
 type Group = {
   id: string;
@@ -48,7 +54,7 @@ type Group = {
   join_policy: string;
   timezone: string;
 };
-type User = { display_name: string; email: string; personal_space_id: string };
+type User = { id: string; display_name: string; email: string; personal_space_id: string };
 type Member = { user_id: string; name: string; email: string; role: string };
 type Join = {
   id: string;
@@ -65,6 +71,7 @@ type Entry = {
   note: string | null;
   completed_at: string;
   in_current_period: boolean;
+  author_name: string;
 };
 const modes: Record<string, string> = {
   check_off: "Check off",
@@ -91,6 +98,7 @@ export default function App() {
     [action, setAction] = useState<Item | null>(null),
     [logging, setLogging] = useState<Item | null>(null),
     [historyItem, setHistoryItem] = useState<Item | null>(null),
+    [commenting, setCommenting] = useState<Item | null>(null),
     [editing, setEditing] = useState<Item | null>(null),
     [profile, setProfile] = useState(false),
     [categoryFilter, setCategoryFilter] = useState("all"),
@@ -374,6 +382,7 @@ export default function App() {
       {showNew && (
         <PromiseForm
           space={space}
+          isGroup={Boolean(group)}
           close={() => setShowNew(false)}
           done={() => {
             setShowNew(false);
@@ -442,6 +451,9 @@ export default function App() {
           duplicate={() => void duplicate(action)}
           archive={() => void archive(action)}
           restore={() => void restore(action)}
+          comments={() => { setAction(null); setCommenting(action); }}
+          showComments={Boolean(group)}
+          viewerId={user?.id ?? ""}
         />
       )}{" "}
       {logging && (
@@ -464,6 +476,7 @@ export default function App() {
         />
       )}
       {historyItem && <History item={historyItem} close={() => setHistoryItem(null)} />}
+      {commenting && <Comments item={commenting} close={() => setCommenting(null)} />}
       {profile && user && <ProfileSettings user={user} close={() => setProfile(false)} save={async (display_name) => { const response = await fetch(`${API}/me`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ display_name }) }); if (!response.ok) throw Error(await detail(response, "Could not save profile.")); setUser({ ...user, ...(await response.json()) }); setProfile(false); }} logout={logout} />}
     </main>
   );
@@ -497,7 +510,7 @@ function Card({
         </button>
       </div>
       <h3>{item.title}</h3>
-      <p className="promise-owner"><b>{item.owner_name}</b> is showing up for this</p>
+      <p className="promise-owner"><b>{item.is_shared ? "Shared promise" : item.owner_name}</b>{item.is_shared ? " · every member can contribute" : " is showing up for this"}</p>
       <p>
         {modes[item.tracking_mode]} ·{" "}
         {item.target_value
@@ -512,10 +525,12 @@ function Card({
       <footer>
         <small>{item.completion_percent}% complete</small>
         <button
-          disabled={item.is_locked || item.completion_percent >= 100}
+          disabled={!item.can_update || item.is_locked || item.completion_percent >= 100}
           onClick={log}
         >
-          {item.is_locked
+          {!item.can_update
+            ? "Owner only"
+            : item.is_locked
             ? "Locked"
             : item.tracking_mode === "check_off"
               ? "Mark done"
@@ -533,6 +548,9 @@ function ActionSheet({
   duplicate,
   archive,
   restore,
+  comments,
+  showComments,
+  viewerId,
 }: {
   item: Item;
   close: () => void;
@@ -541,6 +559,9 @@ function ActionSheet({
   duplicate: () => void;
   archive: () => void;
   restore: () => void;
+  comments: () => void;
+  showComments: boolean;
+  viewerId: string;
 }) {
   return (
     <div className="modal">
@@ -553,16 +574,19 @@ function ActionSheet({
         <p>
           {item.category} · {modes[item.tracking_mode]}
         </p>
-        <button onClick={edit}>
-          Edit promise details <span>›</span>
-        </button>
+        {item.owner_id === viewerId && (
+          <button onClick={edit}>
+            Edit promise details <span>›</span>
+          </button>
+        )}
         <button onClick={history}>
           View progress &amp; graph <span>›</span>
         </button>
-        <button onClick={duplicate}>
+        {showComments && <button onClick={comments}>Discussion &amp; comments <span>›</span></button>}
+        {item.owner_id === viewerId && <button onClick={duplicate}>
           Duplicate promise <span>›</span>
-        </button>
-        {item.status === "archived" ? <button onClick={restore}>Restore to active promises <span>›</span></button> : <button className="danger" onClick={archive}>Archive promise <span>›</span></button>}
+        </button>}
+        {item.owner_id === viewerId && (item.status === "archived" ? <button onClick={restore}>Restore to active promises <span>›</span></button> : <button className="danger" onClick={archive}>Archive promise <span>›</span></button>)}
       </section>
     </div>
   );
@@ -607,7 +631,7 @@ function LogForm({
           <input
             type="number"
             min="0.01"
-            step="0.01"
+            step="any"
             value={value}
             onChange={(e) => setValue(e.target.value)}
             required
@@ -856,8 +880,12 @@ function EditForm({
   done: (data: Record<string, unknown>) => Promise<void>;
 }) {
   const [title, setTitle] = useState(item.title),
+    [description, setDescription] = useState(item.description ?? ""),
     [category, setCategory] = useState(item.category),
     [frequency, setFrequency] = useState(item.frequency),
+    [schedule, setSchedule] = useState(item.schedule_type),
+    [start, setStart] = useState(item.start_date ?? ""),
+    [end, setEnd] = useState(item.end_date ?? ""),
     [target, setTarget] = useState(String(item.target_value ?? "")),
     [unit, setUnit] = useState(item.unit ?? ""),
     [why, setWhy] = useState(item.why_it_matters ?? ""),
@@ -865,11 +893,19 @@ function EditForm({
   const numeric = item.tracking_mode !== "check_off";
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (schedule === "date_range" && (!start || !end || end < start)) {
+      setError("Choose a valid start and end date.");
+      return;
+    }
     try {
       await done({
         title: title.trim(),
+        description: description.trim() || null,
         category,
-        frequency,
+        frequency: schedule === "date_range" ? "date_range" : frequency,
+        schedule_type: schedule,
+        start_date: schedule === "date_range" ? start : null,
+        end_date: schedule === "date_range" ? end : null,
         target_value: numeric ? Number(target) : undefined,
         unit: numeric ? unit.trim() : undefined,
         why_it_matters: why || null,
@@ -891,6 +927,7 @@ function EditForm({
           Promise title
           <input value={title} onChange={(e) => setTitle(e.target.value)} />
         </label>
+        <label>Description <span>(optional)</span><textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
         <div className="row">
           <label>
             Category
@@ -905,25 +942,16 @@ function EditForm({
               )}
             </select>
           </label>
-          <label>
-            Repeat
-            <select
-              value={frequency}
-              onChange={(e) => setFrequency(e.target.value)}
-            >
-              {["daily", "weekly", "monthly"].map((x) => (
-                <option key={x}>{x}</option>
-              ))}
-            </select>
-          </label>
+          <label>Promise type<select value={schedule} onChange={(e) => setSchedule(e.target.value)}><option value="recurring">Recurring</option><option value="date_range">Date range</option></select></label>
         </div>
         {numeric && (
           <div className="row">
             <label>
               Target
               <input
-                type="number"
-                min="0.01"
+              type="number"
+              min="0.01"
+              step="any"
                 value={target}
                 onChange={(e) => setTarget(e.target.value)}
               />
@@ -934,6 +962,7 @@ function EditForm({
             </label>
           </div>
         )}
+        {schedule === "recurring" ? <label>Repeat<select value={frequency} onChange={(e) => setFrequency(e.target.value)}>{["daily", "weekly", "monthly"].map((value) => <option key={value}>{value}</option>)}</select></label> : <div className="row"><label>Start date<input type="date" value={start} onChange={(e) => setStart(e.target.value)} required /></label><label>End date<input type="date" min={start || undefined} value={end} onChange={(e) => setEnd(e.target.value)} required /></label></div>}
         <label>
           Why does this matter?
           <textarea
@@ -953,6 +982,14 @@ function EditForm({
     </div>
   );
 }
+function Comments({ item, close }: { item: Item; close: () => void }) {
+  const [comments, setComments] = useState<{ id: string; body: string; author_name: string; created_at: string }[]>([]), [body, setBody] = useState(""), [error, setError] = useState("");
+  const loadComments = async () => { const response = await fetch(`${API}/promises/${item.id}/comments`); if (!response.ok) { setError(await detail(response, "Could not load comments.")); return; } setComments(await response.json()); };
+  useEffect(() => { void loadComments(); }, [item.id]);
+  const submit = async (event: FormEvent) => { event.preventDefault(); const response = await fetch(`${API}/promises/${item.id}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body }) }); if (!response.ok) { setError(await detail(response, "Could not add comment.")); return; } setBody(""); void loadComments(); };
+  return <div className="modal"><section className="comments-panel"><button className="close" onClick={close}>×</button><small>GROUP DISCUSSION</small><h2>{item.title}</h2>{error && <p className="form-error">{error}</p>}<div className="comment-list">{comments.length ? comments.map((comment) => <article key={comment.id}><b>{comment.author_name}</b><p>{comment.body}</p><small>{new Date(comment.created_at).toLocaleString()}</small></article>) : <p>No comments yet. Start the discussion.</p>}</div><form onSubmit={submit}><label>Add a comment<textarea value={body} onChange={(event) => setBody(event.target.value)} rows={3} maxLength={1000} required /></label><button className="primary" disabled={!body.trim()}>Post comment</button></form></section></div>;
+}
+
 function History({ item, close }: { item: Item; close: () => void }) {
   const [entries, setEntries] = useState<Entry[]>([]),
     [period, setPeriod] = useState<string | null>(null);
@@ -1004,6 +1041,7 @@ function History({ item, close }: { item: Item; close: () => void }) {
                   </b>
                   <span>
                     {new Date(x.completed_at).toLocaleString()}
+                    {` · ${x.author_name}`}
                     {x.note ? ` · ${x.note}` : ""}
                     {period && !x.in_current_period ? " · earlier period" : ""}
                   </span>
@@ -1039,10 +1077,12 @@ function Actions({
 }
 function PromiseForm({
   space,
+  isGroup,
   close,
   done,
 }: {
   space: string;
+  isGroup: boolean;
   close: () => void;
   done: () => void;
 }) {
@@ -1052,6 +1092,7 @@ function PromiseForm({
     [schedule, setSchedule] = useState("recurring"),
     [start, setStart] = useState(""),
     [end, setEnd] = useState(""),
+    [shared, setShared] = useState(false),
     [error, setError] = useState(""),
     [saving, setSaving] = useState(false);
   const numeric = mode !== "check_off";
@@ -1078,6 +1119,7 @@ function PromiseForm({
           start_date: schedule === "date_range" ? start : null,
           end_date: schedule === "date_range" ? end : null,
           why_it_matters: form.get("why") || null,
+          shared,
         }),
       });
       if (!r.ok) throw Error(await detail(r, "Could not create promise."));
@@ -1135,6 +1177,7 @@ function PromiseForm({
                 name="target"
                 type="number"
                 min="0.01"
+                step="any"
                 defaultValue="1"
                 required
               />
@@ -1167,6 +1210,7 @@ function PromiseForm({
           </label>
         </div>
         {schedule === "date_range" && <div className="row"><label>Start date<input type="date" value={start} onChange={(e) => { setStart(e.target.value); if (end && end < e.target.value) setEnd(""); }} required /></label><label>End date<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} min={start || undefined} disabled={!start} required /></label></div>}
+        {isGroup && <label className="shared-toggle"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /> Shared group promise <span>Any group member can contribute progress.</span></label>}
         <label>
           Why does this matter?
           <textarea name="why" rows={3} />

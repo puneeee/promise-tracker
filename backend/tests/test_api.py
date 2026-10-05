@@ -78,6 +78,24 @@ class PromiseTrackerApiTests(unittest.TestCase):
         self.assertEqual(joined.status_code, 200)
         self.assertEqual(joined.json()["id"], group.json()["id"])
 
+        shared = self.client.post(f"/spaces/{group.json()['space_id']}/promises", json={
+            "title": "Run five kilometres together", "tracking_mode": "quantity",
+            "target_value": 5, "unit": "km", "shared": True,
+        })
+        self.assertEqual(shared.status_code, 201)
+        self.assertTrue(shared.json()["is_shared"])
+        self.assertTrue(shared.json()["can_update"])
+        self.assertEqual(self.client.post(
+            f"/promises/{shared.json()['id']}/progress", json={"value": 5, "note": "Finished together"}
+        ).status_code, 200)
+        comment = self.client.post(
+            f"/promises/{shared.json()['id']}/comments", json={"body": "Great work, team!"}
+        )
+        self.assertEqual(comment.status_code, 201)
+        comments = self.client.get(f"/promises/{shared.json()['id']}/comments")
+        self.assertEqual(comments.status_code, 200)
+        self.assertEqual(comments.json()[0]["body"], "Great work, team!")
+
 
 if __name__ == "__main__":
     unittest.main()
