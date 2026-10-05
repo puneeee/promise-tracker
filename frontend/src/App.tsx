@@ -104,6 +104,7 @@ export default function App() {
     [profile, setProfile] = useState(false),
     [categoryFilter, setCategoryFilter] = useState("all"),
     [ownerFilter, setOwnerFilter] = useState("all"),
+    [groupView, setGroupView] = useState<"cards" | "rows">("cards"),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
   const group = groups.find((g) => g.space_id === space),
@@ -337,6 +338,7 @@ export default function App() {
             <div className="filters">
               <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} aria-label="Filter by category"><option value="all">All categories</option>{categories.map((category) => <option key={category}>{category}</option>)}</select>
               {group && <select value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} aria-label="Filter by member"><option value="all">All members</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select>}
+              {group && <div className="view-toggle" role="group" aria-label="Promise layout"><button className={groupView === "rows" ? "selected" : ""} onClick={() => setGroupView("rows")} aria-label="Row view" title="Row view">☰</button><button className={groupView === "cards" ? "selected" : ""} onClick={() => setGroupView("cards")} aria-label="Card view" title="Card view">▦</button></div>}
             </div>
             <div className="tabs">
             {["active", "completed", "archived"].map((tab) => (
@@ -353,15 +355,9 @@ export default function App() {
         {loading ? (
           <div className="empty">Loading…</div>
           ) : visibleItems.length ? (
-            <div className="grid">
+            <div className={group && groupView === "rows" ? "promise-rows" : "grid"}>
               {visibleItems.map((item) => (
-              <Card
-                key={item.id}
-                item={item}
-                manage={() => setAction(item)}
-                log={() => setLogging(item)}
-                comments={group ? () => setCommenting(item) : undefined}
-              />
+              group && groupView === "rows" ? <PromiseRow key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} /> : <Card key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={group ? () => setCommenting(item) : undefined} />
             ))}
           </div>
         ) : (
@@ -542,6 +538,28 @@ function Card({
               : "Log progress"}
         </button>}
       </footer>
+    </article>
+  );
+}
+function PromiseRow({
+  item,
+  manage,
+  log,
+  comments,
+}: {
+  item: Item;
+  manage: () => void;
+  log: () => void;
+  comments: () => void;
+}) {
+  const people = item.is_shared ? item.shared_member_names.join(", ") : item.owner_name;
+  return (
+    <article className={item.completion_percent >= 100 ? "complete" : ""}>
+      <div className="row-category">{item.category[0]}</div>
+      <div className="row-promise"><b>{item.title}</b><small>{item.category} · {modes[item.tracking_mode]}</small></div>
+      <div className="row-member"><b>{item.is_shared ? "Shared with" : "Owner"}</b><span>{people}</span></div>
+      <div className="row-progress"><b>{item.target_value ? `${item.current_progress} / ${item.target_value} ${item.unit ?? ""}` : `${item.completion_percent}%`}</b><div className="track"><i style={{ width: `${item.completion_percent}%` }} /></div></div>
+      <div className="row-actions"><button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={comments}>◌</button>{item.can_update && <button className="row-log" disabled={item.is_locked || item.completion_percent >= 100} onClick={log}>{item.tracking_mode === "check_off" ? "Mark done" : "Log progress"}</button>}<button className="row-menu" aria-label="Manage promise" onClick={manage}>•••</button></div>
     </article>
   );
 }
