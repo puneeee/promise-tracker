@@ -110,6 +110,7 @@ export default function App() {
     [categoryFilter, setCategoryFilter] = useState("all"),
     [ownerFilter, setOwnerFilter] = useState("all"),
     [groupView, setGroupView] = useState<"cards" | "rows">("cards"),
+    [theme, setTheme] = useState<"light" | "dark">(() => localStorage.getItem("promise_theme") === "dark" ? "dark" : "light"),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
   const group = groups.find((g) => g.space_id === space),
@@ -169,6 +170,9 @@ export default function App() {
   useEffect(() => {
     void load();
   }, [space, view]);
+  useEffect(() => {
+    localStorage.setItem("promise_theme", theme);
+  }, [theme]);
   const summary = useMemo(
     () => ({
       done: items.filter((x) => x.completion_percent >= 100).length,
@@ -241,7 +245,7 @@ export default function App() {
   };
   const initials = (user?.display_name || "U")[0].toUpperCase();
   return (
-    <main className="app">
+    <main className={`app ${theme === "dark" ? "dark" : ""}`}>
       <aside>
         <div className="brand">
           <i>✓</i> promise
@@ -290,6 +294,7 @@ export default function App() {
                 Group settings
               </button>
             )}
+            <button className="theme-toggle" onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")} aria-label="Toggle color theme" title={theme === "dark" ? "Use light mode" : "Use dark mode"}>{theme === "dark" ? "☀" : "◐"}</button>
             <button className="primary" onClick={() => setShowNew(true)}>
               ＋ New promise
             </button>
@@ -343,7 +348,6 @@ export default function App() {
             <div className="filters">
               <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} aria-label="Filter by category"><option value="all">All categories</option>{categories.map((category) => <option key={category}>{category}</option>)}</select>
               {group && <select value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} aria-label="Filter by member"><option value="all">All members</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select>}
-              {group && <div className="view-toggle" role="group" aria-label="Promise layout"><button className={groupView === "rows" ? "selected" : ""} onClick={() => setGroupView("rows")} aria-label="Row view" title="Row view">☰</button><button className={groupView === "cards" ? "selected" : ""} onClick={() => setGroupView("cards")} aria-label="Card view" title="Card view">▦</button></div>}
             </div>
             <div className="tabs">
             {["active", "completed", "archived"].map((tab) => (
@@ -355,6 +359,7 @@ export default function App() {
                 {tab}
               </button>
             ))}
+            {group && <div className="view-toggle" role="group" aria-label="Promise layout"><button className={groupView === "rows" ? "selected" : ""} onClick={() => setGroupView("rows")} aria-label="Row view" title="Row view">☰</button><button className={groupView === "cards" ? "selected" : ""} onClick={() => setGroupView("cards")} aria-label="Card view" title="Card view">▦</button></div>}
           </div>
         </div>
         {loading ? (
@@ -362,7 +367,7 @@ export default function App() {
           ) : visibleItems.length ? (
             <div className={group && groupView === "rows" ? "promise-rows" : "grid"}>
               {visibleItems.map((item) => (
-              group && groupView === "rows" ? <PromiseRow key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} /> : <Card key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={group ? () => setCommenting(item) : undefined} />
+              group && groupView === "rows" ? <PromiseRow key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} /> : <Card key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} />
             ))}
           </div>
         ) : (
@@ -457,7 +462,7 @@ export default function App() {
           archive={() => void archive(action)}
           restore={() => void restore(action)}
           comments={() => { setAction(null); setCommenting(action); }}
-          showComments={Boolean(group)}
+          showComments={true}
           viewerId={user?.id ?? ""}
         />
       )}{" "}

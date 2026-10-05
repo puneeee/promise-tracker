@@ -38,6 +38,9 @@ class PromiseTrackerApiTests(unittest.TestCase):
         self.assertEqual(promise.status_code, 201)
         self.assertEqual(promise.json()["unit"], "km")
         promise_id = promise.json()["id"]
+        personal_comment = self.client.post(f"/promises/{promise_id}/comments", json={"body": "A private note"})
+        self.assertEqual(personal_comment.status_code, 201)
+        self.assertEqual(self.client.get(f"/promises/{promise_id}/comments").json()[0]["body"], "A private note")
 
         legacy_target = self.client.post(f"/spaces/{personal_space}/promises", json={
             "title": "Legacy five hour target", "tracking_mode": "duration", "target_value": 5.01, "unit": "hours",

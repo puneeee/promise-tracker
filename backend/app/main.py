@@ -715,9 +715,7 @@ def promise_history(promise_id: str, db: Session = Depends(get_db), user: User =
 @app.get("/promises/{promise_id}/comments")
 def list_comments(promise_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     promise = get_promise_or_404(promise_id, db)
-    space = ensure_space_access(promise.space_id, user, db)
-    if space.type != SpaceType.GROUP.value:
-        raise HTTPException(status_code=403, detail="Comments are available for group promises only")
+    ensure_space_access(promise.space_id, user, db)
     comments = db.query(PromiseComment).filter_by(promise_id=promise.id).order_by(PromiseComment.created_at.asc()).all()
     return [{"id": comment.id, "body": comment.body, "author_name": comment.author.display_name, "created_at": comment.created_at.isoformat()} for comment in comments]
 
@@ -725,9 +723,7 @@ def list_comments(promise_id: str, db: Session = Depends(get_db), user: User = D
 @app.post("/promises/{promise_id}/comments", status_code=status.HTTP_201_CREATED)
 def add_comment(promise_id: str, payload: CommentCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
     promise = get_promise_or_404(promise_id, db)
-    space = ensure_space_access(promise.space_id, user, db)
-    if space.type != SpaceType.GROUP.value:
-        raise HTTPException(status_code=403, detail="Comments are available for group promises only")
+    ensure_space_access(promise.space_id, user, db)
     comment = PromiseComment(id=str(uuid4()), promise_id=promise.id, author_id=user.id, body=payload.body)
     db.add(comment)
     db.commit()
