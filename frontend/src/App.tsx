@@ -82,6 +82,11 @@ const modes: Record<string, string> = {
   percentage: "Percentage",
   custom: "Custom quantity",
 };
+const formatQuantity = (value: number | string | null) => {
+  if (value === null) return "";
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? String(Number(numeric.toFixed(6))) : String(value);
+};
 async function detail(response: Response, fallback: string) {
   const body = await response.json().catch(() => ({}));
   return body.detail || fallback;
@@ -517,7 +522,7 @@ function Card({
       <p>
         {modes[item.tracking_mode]} ·{" "}
         {item.target_value
-          ? `${item.current_progress} / ${item.target_value} ${item.unit ?? ""}`
+          ? `${formatQuantity(item.current_progress)} / ${formatQuantity(item.target_value)} ${item.unit ?? ""}`
           : item.completion_percent
             ? "Completed this period"
             : "Not completed this period"}
@@ -561,7 +566,7 @@ function PromiseRow({
       <div className="row-category">{item.category[0]}</div>
       <div className="row-promise"><b>{item.title}</b><small>{item.category} · {modes[item.tracking_mode]}</small></div>
       <div className="row-member"><b>{item.is_shared ? "Shared with" : "Owner"}</b><span>{people}</span></div>
-      <div className="row-progress"><b>{item.target_value ? `${item.current_progress} / ${item.target_value} ${item.unit ?? ""}` : `${item.completion_percent}%`}</b><div className="track"><i style={{ width: `${item.completion_percent}%` }} /></div></div>
+      <div className="row-progress"><b>{item.target_value ? `${formatQuantity(item.current_progress)} / ${formatQuantity(item.target_value)} ${item.unit ?? ""}` : `${item.completion_percent}%`}</b><div className="track"><i style={{ width: `${item.completion_percent}%` }} /></div></div>
       <div className="row-actions"><button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={comments}><CommentIcon /></button>{item.can_update && <button className="row-log" disabled={item.is_locked || item.completion_percent >= 100} onClick={log}>{item.tracking_mode === "check_off" ? "Mark done" : "Log progress"}</button>}<button className="row-menu" aria-label="Manage promise" onClick={manage}>•••</button></div>
     </article>
   );
@@ -1063,7 +1068,7 @@ function History({ item, close }: { item: Item; close: () => void }) {
               .map((x) => (
                 <div key={x.id}>
                   <b>
-                    +{x.value} {item.unit ?? ""}
+                    +{formatQuantity(x.value)} {item.unit ?? ""}
                   </b>
                   <span>
                     {new Date(x.completed_at).toLocaleString()}

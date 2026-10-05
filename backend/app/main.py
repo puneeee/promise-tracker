@@ -146,6 +146,12 @@ class Promise(Base):
     progress_entries: Mapped[list["ProgressEntry"]] = relationship(cascade="all, delete-orphan")
 
 
+class DataMigration(Base):
+    __tablename__ = "data_migrations"
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    applied_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class ProgressEntry(Base):
     __tablename__ = "progress_entries"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -442,6 +448,26 @@ def backfill_existing_shared_promise_members() -> None:
 
 
 backfill_existing_shared_promise_members()
+
+
+def normalize_legacy_whole_number_targets() -> None:
+    """Repair targets affected by the old 0.01-based number input step."""
+    migration_key = "normalize_legacy_whole_number_targets_v1"
+    with SessionLocal() as db:
+        if db.get(DataMigration, migration_key):
+            return
+        corrected = 0
+        for promise in db.query(Promise).filter(Promise.target_value.is_not(None)).all():
+            target = promise.target_value
+            if target is not None and target > Decimal("1") and target % Decimal("1") == Decimal("0.01"):
+                promise.target_value = target - Decimal("0.01")
+                corrected += 1
+        db.add(DataMigration(key=migration_key))
+        db.commit()
+        logger.info("Normalized %s legacy whole-number promise targets", corrected)
+
+
+normalize_legacy_whole_number_targets()
 
 app = FastAPI(title="Promise Tracker API", version="0.1.0")
 app.add_middleware(

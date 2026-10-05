@@ -12,7 +12,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{database_file.as_posix()}"
 os.environ["APP_ENV"] = "test"
 
 from fastapi.testclient import TestClient  # noqa: E402
-from app.main import app  # noqa: E402
+from app.main import DataMigration, SessionLocal, app, normalize_legacy_whole_number_targets  # noqa: E402
 
 
 class PromiseTrackerApiTests(unittest.TestCase):
@@ -38,6 +38,17 @@ class PromiseTrackerApiTests(unittest.TestCase):
         self.assertEqual(promise.status_code, 201)
         self.assertEqual(promise.json()["unit"], "km")
         promise_id = promise.json()["id"]
+
+        legacy_target = self.client.post(f"/spaces/{personal_space}/promises", json={
+            "title": "Legacy five hour target", "tracking_mode": "duration", "target_value": 5.01, "unit": "hours",
+        })
+        self.assertEqual(legacy_target.status_code, 201)
+        with SessionLocal() as db:
+            db.query(DataMigration).filter_by(key="normalize_legacy_whole_number_targets_v1").delete()
+            db.commit()
+        normalize_legacy_whole_number_targets()
+        normalized = self.client.get(f"/spaces/{personal_space}/promises?view=active").json()
+        self.assertEqual(next(item for item in normalized if item["id"] == legacy_target.json()["id"])["target_value"], "5.00")
         progress = self.client.post(f"/promises/{promise_id}/progress", json={"value": 3})
         self.assertEqual(progress.status_code, 200)
         history = self.client.get(f"/promises/{promise_id}/history")
