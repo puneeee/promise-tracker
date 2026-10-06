@@ -372,6 +372,7 @@ export default function App() {
             <h2>Promises</h2>
             <p>Small actions, kept consistently.</p>
           </div>
+          <div className="promise-controls">
             <div className="filters">
               {isMine && <select value={mineSpaceFilter} onChange={(event) => setMineSpaceFilter(event.target.value)} aria-label="Filter my promises by space"><option value="all">All my promises</option><option value="personal">Personal space</option>{groups.map((item) => <option key={item.id} value={item.space_id}>{item.name}</option>)}</select>}
               <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} aria-label="Filter by category"><option value="all">All categories</option>{categories.map((category) => <option key={category}>{category}</option>)}</select>
@@ -388,6 +389,7 @@ export default function App() {
               </button>
             ))}
             <div className="view-toggle" role="group" aria-label="Promise layout"><button className={groupView === "rows" ? "selected" : ""} onClick={() => setGroupView("rows")} aria-label="Row view" title="Row view">☰</button><button className={groupView === "cards" ? "selected" : ""} onClick={() => setGroupView("cards")} aria-label="Card view" title="Card view">▦</button></div>
+          </div>
           </div>
         </div>
         {loading ? (
