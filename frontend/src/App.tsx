@@ -399,7 +399,7 @@ export default function App() {
           ) : visibleItems.length ? (
             <div className={groupView === "rows" ? "promise-rows" : "grid"}>
               {visibleItems.map((item) => (
-              groupView === "rows" ? <PromiseRow key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} /> : <Card key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} history={() => setHistoryItem(item)} />
+              groupView === "rows" ? <PromiseRow key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} history={() => setHistoryItem(item)} /> : <Card key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} history={() => setHistoryItem(item)} />
             ))}
           </div>
         ) : (
@@ -547,7 +547,7 @@ function Card({
   history: () => void;
 }) {
   return (
-    <article className={item.completion_percent >= 100 ? "complete clickable-card" : "clickable-card"} onClick={history} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") history(); }}>
+    <article className={item.completion_percent >= 100 ? "complete clickable-card" : "clickable-card"} onClick={history} role="button" tabIndex={0} aria-label={`View progress and history for ${item.title}`} title="View progress and history" onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); history(); } }}>
       <div className="card-head">
         <b>{item.category[0]}</b>
         <small>{item.frequency}</small>
@@ -597,20 +597,22 @@ function PromiseRow({
   manage,
   log,
   comments,
+  history,
 }: {
   item: Item;
   manage: () => void;
   log: () => void;
   comments: () => void;
+  history: () => void;
 }) {
   const people = item.is_shared ? item.shared_member_names.join(", ") : item.owner_name;
   return (
-    <article className={item.completion_percent >= 100 ? "complete" : ""}>
+    <article className={item.completion_percent >= 100 ? "complete clickable-card" : "clickable-card"} onClick={history} role="button" tabIndex={0} aria-label={`View progress and history for ${item.title}`} title="View progress and history" onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); history(); } }}>
       <div className="row-category">{item.category[0]}</div>
       <div className="row-promise"><b>{item.title}</b><small>{item.category} · {modes[item.tracking_mode]}</small></div>
       <div className="row-member"><small>{item.is_shared ? "Shared with" : "Promise owner"}</small><b>{people}</b></div>
       <div className="row-progress"><b>{item.target_value ? `${formatQuantity(item.current_progress)} / ${formatQuantity(item.target_value)} ${item.unit ?? ""}` : `${item.completion_percent}%`}</b><div className="track"><i style={{ width: `${item.completion_percent}%` }} /></div></div>
-      <div className="row-actions"><button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={comments}><CommentIcon /></button>{item.can_update && <button className="row-log" disabled={item.is_locked || item.completion_percent >= 100} onClick={log}>{item.tracking_mode === "check_off" ? "Mark done" : "Log progress"}</button>}<button className="row-menu" aria-label="Manage promise" onClick={manage}>•••</button></div>
+      <div className="row-actions"><button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={(event) => { event.stopPropagation(); comments(); }}><CommentIcon /></button>{item.can_update && <button className="row-log" disabled={item.is_locked || item.completion_percent >= 100} onClick={(event) => { event.stopPropagation(); log(); }}>{item.tracking_mode === "check_off" ? "Mark done" : "Log progress"}</button>}<button className="row-menu" aria-label="Manage promise" onClick={(event) => { event.stopPropagation(); manage(); }}>•••</button></div>
     </article>
   );
 }
