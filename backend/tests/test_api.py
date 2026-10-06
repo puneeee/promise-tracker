@@ -92,6 +92,14 @@ class PromiseTrackerApiTests(unittest.TestCase):
         self.assertEqual(joined.status_code, 200)
         self.assertEqual(joined.json()["id"], group.json()["id"])
 
+        approval_group = self.client.post("/groups", json={"name": "Approval group", "join_policy": "admin_approval"})
+        self.assertEqual(approval_group.status_code, 201)
+        approval_invite = self.client.post(f"/groups/{approval_group.json()['id']}/invites")
+        already_member = self.client.post(f"/invites/{approval_invite.json()['token']}/join")
+        self.assertEqual(already_member.status_code, 200)
+        self.assertEqual(already_member.json()["status"], "member")
+        self.assertEqual(self.client.get(f"/groups/{approval_group.json()['id']}/join-requests").json(), [])
+
         shared = self.client.post(f"/spaces/{group.json()['space_id']}/promises", json={
             "title": "Run five kilometres together", "tracking_mode": "quantity",
             "target_value": 5, "unit": "km", "shared": True, "shared_member_ids": ["demo-user"],

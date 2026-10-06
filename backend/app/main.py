@@ -926,7 +926,17 @@ def list_join_requests(group_id: str, db: Session = Depends(get_db), user: User 
     if membership.role not in {"owner", "admin"}:
         raise HTTPException(status_code=403, detail="Only an owner or admin can review join requests")
     requests = db.query(JoinRequest).filter_by(group_id=group_id, status="pending").order_by(JoinRequest.created_at.asc()).all()
-    return [{"id": request.id, "user_id": request.user_id, "name": request.user.display_name, "email": request.user.email, "created_at": request.created_at.isoformat()} for request in requests]
+    pending = []
+    for request in requests:
+        # Older versions could create a request after a person had already
+        # joined. Resolve those stale records while reading the queue.
+        if db.query(Membership).filter_by(group_id=group_id, user_id=request.user_id).first():
+            request.status = "approved"
+        else:
+            pending.append(request)
+    if len(pending) != len(requests):
+        db.commit()
+    return [{"id": request.id, "user_id": request.user_id, "name": request.user.display_name, "email": request.user.email, "created_at": request.created_at.isoformat()} for request in pending]
 
 
 @app.post("/groups/{group_id}/join-requests/{request_id}/{decision}")
@@ -987,19 +997,28 @@ def join_with_invite(token: str, db: Session = Depends(get_db), user: User = Dep
     if invite is None:
         raise HTTPException(status_code=404, detail="This invite link is invalid or has been revoked")
     group = db.get(Group, invite.group_id)
+    membership = db.query(Membership).filter_by(group_id=group.id, user_id=user.id).first()
+    space = db.get(Space, group.space_id)
+    if membership is not None:
+        stale_requests = db.query(JoinRequest).filter_by(group_id=group.id, user_id=user.id, status="pending").all()
+        for request in stale_requests:
+            request.status = "approved"
+        if stale_requests:
+            db.commit()
+        return {"status": "member", "id": group.id, "space_id": space.id, "name": space.name, "role": membership.role, "message": "You are already a member of this group."}
     if group.join_policy == "admin_approval":
         existing = db.query(JoinRequest).filter_by(group_id=group.id, user_id=user.id, status="pending").first()
         if existing is None:
             db.add(JoinRequest(id=str(uuid4()), group_id=group.id, user_id=user.id, status="pending"))
             db.commit()
-        return {"status": "pending", "message": "Your request was sent to the group admins."}
-    membership = db.query(Membership).filter_by(group_id=group.id, user_id=user.id).first()
-    if membership is None:
-        membership = Membership(id=str(uuid4()), group_id=group.id, user_id=user.id, role="member")
-        db.add(membership)
-        db.commit()
-    space = db.get(Space, group.space_id)
-    return {"id": group.id, "space_id": space.id, "name": space.name, "role": membership.role}
+            message = "Your request was sent to the group admins."
+        else:
+            message = "Your request is already waiting for approval from a group admin."
+        return {"status": "pending", "message": message}
+    membership = Membership(id=str(uuid4()), group_id=group.id, user_id=user.id, role="member")
+    db.add(membership)
+    db.commit()
+    return {"status": "joined", "id": group.id, "space_id": space.id, "name": space.name, "role": membership.role}
 
 
 @app.get("/groups/{group_id}/dashboard")

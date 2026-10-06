@@ -119,6 +119,7 @@ export default function App() {
     [notifications, setNotifications] = useState<NotificationItem[]>([]),
     [unreadCount, setUnreadCount] = useState(0),
     [showNotifications, setShowNotifications] = useState(false),
+    [inviteStatus, setInviteStatus] = useState(""),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
   const isMine = space === "mine",
@@ -169,7 +170,7 @@ export default function App() {
         const body = await join.json();
         if (!join.ok) throw Error(body.detail || "Could not join group.");
         if (body.status === "pending") {
-          setError(body.message);
+          setInviteStatus(body.message);
           return;
         }
         setGroups((current) =>
@@ -339,6 +340,7 @@ export default function App() {
             <button onClick={() => setError("")}>×</button>
           </div>
         )}
+        {inviteStatus && <div className="notice" role="status">{inviteStatus}<button onClick={() => setInviteStatus("")}>Dismiss</button></div>}
         <section className="hero">
           <div>
             <small>
