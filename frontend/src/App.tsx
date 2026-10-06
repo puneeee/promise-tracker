@@ -517,7 +517,7 @@ export default function App() {
           }}
         />
       )}
-      {historyItem && <History item={historyItem} close={() => setHistoryItem(null)} />}
+      {historyItem && <History item={historyItem} close={() => setHistoryItem(null)} log={() => { setHistoryItem(null); setLogging(historyItem); }} comments={() => { setHistoryItem(null); setCommenting(historyItem); }} manage={() => { setHistoryItem(null); setAction(historyItem); }} />}
       {commenting && <Comments item={commenting} close={() => setCommenting(null)} />}
       {profile && user && <ProfileSettings user={user} close={() => setProfile(false)} save={async (display_name) => { const response = await fetch(`${API}/me`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ display_name }) }); if (!response.ok) throw Error(await detail(response, "Could not save profile.")); setUser({ ...user, ...(await response.json()) }); setProfile(false); }} logout={logout} />}
     </main>
@@ -1066,7 +1066,7 @@ function Comments({ item, close }: { item: Item; close: () => void }) {
   return <div className="modal"><section className="comments-panel"><button className="close" onClick={close}>×</button><small>DISCUSSION &amp; NOTES</small><h2>{item.title}</h2>{error && <p className="form-error">{error}</p>}<div className="comment-list">{comments.length ? comments.map((comment) => <article key={comment.id}><b>{comment.author_name}</b><p>{comment.body}</p><small>{formatLocalTime(comment.created_at)}</small></article>) : <p>No comments yet. Start the discussion.</p>}</div><form onSubmit={submit}><label>Add a comment<textarea value={body} onChange={(event) => setBody(event.target.value)} rows={3} maxLength={1000} required /></label><button className="primary" disabled={!body.trim()}>Post comment</button></form></section></div>;
 }
 
-function History({ item, close }: { item: Item; close: () => void }) {
+function History({ item, close, log, comments, manage }: { item: Item; close: () => void; log: () => void; comments: () => void; manage: () => void }) {
   const [entries, setEntries] = useState<Entry[]>([]),
     [period, setPeriod] = useState<string | null>(null);
   useEffect(() => {
@@ -1099,6 +1099,11 @@ function History({ item, close }: { item: Item; close: () => void }) {
           {period ? `CURRENT PERIOD SINCE ${period}` : "PROGRESS HISTORY"}
         </small>
         <h2>{item.title}</h2>
+        <div className="history-actions">
+          <button onClick={comments}>Discussion</button>
+          {item.can_update && <button className="primary" disabled={item.is_locked || item.completion_percent >= 100} onClick={log}>{item.tracking_mode === "check_off" ? "Mark done" : "Log progress"}</button>}
+          <button onClick={manage}>Manage promise</button>
+        </div>
         <div className="chart">
           <svg viewBox="0 0 100 100" preserveAspectRatio="none">
             <line x1="0" y1="94" x2="100" y2="94" />
