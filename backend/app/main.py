@@ -317,6 +317,8 @@ def progress_for_current_period(promise: Promise) -> list[ProgressEntry]:
 class PromiseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
+    space_id: str
+    space_name: str
     title: str
     category: str
     tracking_mode: str
@@ -403,6 +405,7 @@ def promise_view(promise: Promise, viewer_id: str | None = None, db: Session | N
     if db is None:
         raise ValueError("A database session is required to view a promise")
     is_shared = db.get(SharedPromise, promise.id) is not None
+    space = db.get(Space, promise.space_id)
     can_update, shared_member_names = promise_access(promise, viewer_id, db)
     progress = sum((entry.value for entry in progress_for_current_period(promise)), Decimal("0"))
     if promise.tracking_mode == TrackingMode.CHECK_OFF.value:
@@ -410,7 +413,7 @@ def promise_view(promise: Promise, viewer_id: str | None = None, db: Session | N
     target = promise.target_value or Decimal("1")
     percent = min(100, int((progress / target) * 100)) if target else 0
     return PromiseResponse(
-        id=promise.id, title=promise.title, category=promise.category,
+        id=promise.id, space_id=promise.space_id, space_name=space.name if space else "My promises", title=promise.title, category=promise.category,
         tracking_mode=promise.tracking_mode, unit=promise.unit, target_value=promise.target_value,
         schedule_type=promise.schedule_type, frequency=promise.frequency, status=promise.status,
         is_locked=promise.is_locked, current_progress=progress, completion_percent=percent,
@@ -641,6 +644,17 @@ def list_promises(space_id: str, view: str = "active", db: Session = Depends(get
     if view != "all":
         query = query.filter_by(status=view)
     promises = query.order_by(Promise.created_at.desc()).all()
+    return [promise_view(promise, user.id, db) for promise in promises]
+
+
+@app.get("/my-promises", response_model=list[PromiseResponse])
+def list_my_promises(view: str = "active", db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if view not in {"active", "completed", "archived", "all"}:
+        raise HTTPException(status_code=422, detail="Unknown promise view")
+    shared_ids = {item.promise_id for item in db.query(SharedPromiseMember).filter_by(user_id=user.id).all()}
+    promises = [promise for promise in db.query(Promise).order_by(Promise.created_at.desc()).all() if promise.owner_id == user.id or promise.id in shared_ids]
+    if view != "all":
+        promises = [promise for promise in promises if promise.status == view]
     return [promise_view(promise, user.id, db) for promise in promises]
 
 

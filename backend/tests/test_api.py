@@ -99,6 +99,9 @@ class PromiseTrackerApiTests(unittest.TestCase):
         self.assertEqual(shared.status_code, 201)
         self.assertTrue(shared.json()["is_shared"])
         self.assertTrue(shared.json()["can_update"])
+        mine = self.client.get("/my-promises?view=active")
+        self.assertEqual(mine.status_code, 200)
+        self.assertTrue(any(item["id"] == shared.json()["id"] and item["space_id"] == group.json()["space_id"] for item in mine.json()))
         self.assertEqual(self.client.post(
             f"/promises/{shared.json()['id']}/progress", json={"value": 5, "note": "Finished together"}
         ).status_code, 200)

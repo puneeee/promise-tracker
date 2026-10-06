@@ -26,6 +26,8 @@ window.fetch = (async (input, init) => {
 }) as typeof fetch;
 type Item = {
   id: string;
+  space_id: string;
+  space_name: string;
   title: string;
   category: string;
   tracking_mode: string;
@@ -112,13 +114,15 @@ export default function App() {
     [categoryFilter, setCategoryFilter] = useState("all"),
     [ownerFilter, setOwnerFilter] = useState("all"),
     [groupView, setGroupView] = useState<"cards" | "rows">("cards"),
+    [mineSpaceFilter, setMineSpaceFilter] = useState("all"),
     [theme, setTheme] = useState<"light" | "dark">(() => localStorage.getItem("promise_theme") === "dark" ? "dark" : "light"),
     [notifications, setNotifications] = useState<NotificationItem[]>([]),
     [unreadCount, setUnreadCount] = useState(0),
     [showNotifications, setShowNotifications] = useState(false),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
-  const group = groups.find((g) => g.space_id === space),
+  const isMine = space === "mine",
+    group = groups.find((g) => g.space_id === space),
     manage = group?.role === "owner" || group?.role === "admin";
   const loadNotifications = async () => {
     const response = await fetch(`${API}/notifications`);
@@ -131,7 +135,7 @@ export default function App() {
     if (!space) return;
     setLoading(true);
     try {
-      const r = await fetch(`${API}/spaces/${space}/promises?view=${view}`);
+      const r = await fetch(isMine ? `${API}/my-promises?view=${view}` : `${API}/spaces/${space}/promises?view=${view}`);
       if (!r.ok) throw Error(await detail(r, "Could not load promises."));
       setItems(await r.json());
       setError("");
@@ -153,7 +157,7 @@ export default function App() {
         owned = (await gl.json()) as Group[];
       setUser(account);
       setGroups(owned);
-      setSpace(account.personal_space_id);
+      setSpace("mine");
       void loadNotifications();
       const invite = new URLSearchParams(location.search).get("invite");
       if (invite) {
@@ -199,7 +203,7 @@ export default function App() {
   );
   const categories = useMemo(() => [...new Set(items.map((item) => item.category))].sort(), [items]);
   const owners = useMemo(() => [...new Set(items.map((item) => item.owner_name))].sort(), [items]);
-  const visibleItems = items.filter((item) => (categoryFilter === "all" || item.category === categoryFilter) && (ownerFilter === "all" || item.owner_name === ownerFilter));
+  const visibleItems = items.filter((item) => (categoryFilter === "all" || item.category === categoryFilter) && (ownerFilter === "all" || item.owner_name === ownerFilter) && (mineSpaceFilter === "all" || (mineSpaceFilter === "personal" ? item.space_id === user?.personal_space_id : item.space_id === mineSpaceFilter)));
   const log = async (item: Item, value: number, note: string) => {
     const r = await fetch(`${API}/promises/${item.id}/progress`, {
       method: "POST",
@@ -275,8 +279,8 @@ export default function App() {
         <nav className="spaces-nav">
           <small>YOUR SPACES</small>
           <button
-            className={space === user?.personal_space_id ? "active" : ""}
-            onClick={() => setSpace(user?.personal_space_id ?? "")}
+            className={isMine ? "active" : ""}
+            onClick={() => setSpace("mine")}
           >
             ◒ My promises
           </button>
@@ -369,6 +373,7 @@ export default function App() {
             <p>Small actions, kept consistently.</p>
           </div>
             <div className="filters">
+              {isMine && <select value={mineSpaceFilter} onChange={(event) => setMineSpaceFilter(event.target.value)} aria-label="Filter my promises by space"><option value="all">All my promises</option><option value="personal">Personal space</option>{groups.map((item) => <option key={item.id} value={item.space_id}>{item.name}</option>)}</select>}
               <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} aria-label="Filter by category"><option value="all">All categories</option>{categories.map((category) => <option key={category}>{category}</option>)}</select>
               {group && <select value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} aria-label="Filter by member"><option value="all">All members</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select>}
             </div>
@@ -390,7 +395,7 @@ export default function App() {
           ) : visibleItems.length ? (
             <div className={group && groupView === "rows" ? "promise-rows" : "grid"}>
               {visibleItems.map((item) => (
-              group && groupView === "rows" ? <PromiseRow key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} /> : <Card key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} />
+              group && groupView === "rows" ? <PromiseRow key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} /> : <Card key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} history={() => setHistoryItem(item)} />
             ))}
           </div>
         ) : (
@@ -412,7 +417,7 @@ export default function App() {
       </section>
       {showNew && (
         <PromiseForm
-          space={space}
+          space={isMine ? user?.personal_space_id ?? "" : space}
           isGroup={Boolean(group)}
           groupId={group?.id}
           currentUserId={user?.id ?? ""}
@@ -464,7 +469,7 @@ export default function App() {
           }}
           deleted={() => {
             setGroups((x) => x.filter((x) => x.id !== group.id));
-            setSpace(user?.personal_space_id ?? "");
+            setSpace("mine");
             setSettings(false);
           }}
         />
@@ -529,25 +534,27 @@ function Card({
   manage,
   log,
   comments,
+  history,
 }: {
   item: Item;
   manage: () => void;
   log: () => void;
   comments?: () => void;
+  history: () => void;
 }) {
   return (
-    <article className={item.completion_percent >= 100 ? "complete" : ""}>
+    <article className={item.completion_percent >= 100 ? "complete clickable-card" : "clickable-card"} onClick={history} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") history(); }}>
       <div className="card-head">
         <b>{item.category[0]}</b>
         <small>{item.frequency}</small>
         <button
           className="card-menu"
           aria-label="Manage promise"
-          onClick={manage}
+          onClick={(event) => { event.stopPropagation(); manage(); }}
         >
           •••
         </button>
-        {comments && <button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={comments}><CommentIcon /></button>}
+        {comments && <button className="comment-button" aria-label="Open promise discussion" title="Discussion" onClick={(event) => { event.stopPropagation(); comments(); }}><CommentIcon /></button>}
       </div>
       <h3>{item.title}</h3>
       <p className="promise-owner"><span>{item.is_shared ? "Shared with" : "Promise owner"}</span><b>{item.is_shared ? item.shared_member_names.join(", ") : item.owner_name}</b></p>
@@ -566,7 +573,7 @@ function Card({
         <small>{item.completion_percent}% complete</small>
         {item.can_update && <button
           disabled={item.is_locked || item.completion_percent >= 100}
-          onClick={log}
+          onClick={(event) => { event.stopPropagation(); log(); }}
         >
           {item.is_locked
             ? "Locked"
