@@ -387,15 +387,15 @@ export default function App() {
                 {tab}
               </button>
             ))}
-            {group && <div className="view-toggle" role="group" aria-label="Promise layout"><button className={groupView === "rows" ? "selected" : ""} onClick={() => setGroupView("rows")} aria-label="Row view" title="Row view">☰</button><button className={groupView === "cards" ? "selected" : ""} onClick={() => setGroupView("cards")} aria-label="Card view" title="Card view">▦</button></div>}
+            <div className="view-toggle" role="group" aria-label="Promise layout"><button className={groupView === "rows" ? "selected" : ""} onClick={() => setGroupView("rows")} aria-label="Row view" title="Row view">☰</button><button className={groupView === "cards" ? "selected" : ""} onClick={() => setGroupView("cards")} aria-label="Card view" title="Card view">▦</button></div>
           </div>
         </div>
         {loading ? (
           <div className="empty">Loading…</div>
           ) : visibleItems.length ? (
-            <div className={group && groupView === "rows" ? "promise-rows" : "grid"}>
+            <div className={groupView === "rows" ? "promise-rows" : "grid"}>
               {visibleItems.map((item) => (
-              group && groupView === "rows" ? <PromiseRow key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} /> : <Card key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} history={() => setHistoryItem(item)} />
+              groupView === "rows" ? <PromiseRow key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} /> : <Card key={item.id} item={item} manage={() => setAction(item)} log={() => setLogging(item)} comments={() => setCommenting(item)} history={() => setHistoryItem(item)} />
             ))}
           </div>
         ) : (
